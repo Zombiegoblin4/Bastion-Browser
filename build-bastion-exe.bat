@@ -32,6 +32,7 @@ if errorlevel 1 (
 )
 
 echo [Bastion] Build complete. Check the dist folder.
+echo [Bastion] update.zip has been generated for release publishing.
 pause
 
 endlocal
