@@ -1,0 +1,63 @@
+{
+  "name": "bastion-browser",
+  "version": "1.0.0",
+  "description": "Bastion Browser - custom Chromium desktop browser with DuckDuckGo default search and extension loading.",
+  "main": "main.js",
+  "author": "Bastion Browser Team",
+  "license": "MIT",
+  "scripts": {
+    "start": "node scripts/start.js",
+    "dev": "node scripts/start.js",
+    "dist": "electron-builder --win nsis portable",
+    "pack": "electron-builder --dir"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.bastion.browser",
+    "productName": "Bastion Browser",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "scripts/**/*",
+      "src/**/*",
+      "extensions/**/*",
+      "package.json"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "Bastion-Browser-${version}-${arch}-Setup.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "Bastion-Browser-${version}-${arch}-Portable.${ext}"
+    }
+  }
+}

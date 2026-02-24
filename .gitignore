@@ -1,0 +1,13 @@
+node_modules/
+dist/
+out/
+*.log
+*.tmp
+*.tsbuildinfo
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
