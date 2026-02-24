@@ -22,7 +22,9 @@ const DEFAULT_UPDATE_CONFIG = {
   autoCheck: true,
   autoDownload: true,
   allowPrerelease: false,
-  feedURL: ""
+  feedURL: "",
+  useGithubReleaseZip: true,
+  autoApplyGithubZip: true
 };
 
 const DEFAULT_PRIVACY_CONFIG = {
@@ -1065,7 +1067,9 @@ async function handleLocalAction(url, tab) {
       autoCheck: parsed.searchParams.get("autoCheck") === "1",
       autoDownload: parsed.searchParams.get("autoDownload") === "1",
       allowPrerelease: parsed.searchParams.get("allowPrerelease") === "1",
-      feedURL: (parsed.searchParams.get("feedURL") || "").trim()
+      feedURL: (parsed.searchParams.get("feedURL") || "").trim(),
+      useGithubReleaseZip: parsed.searchParams.get("useGithubReleaseZip") === "1",
+      autoApplyGithubZip: parsed.searchParams.get("autoApplyGithubZip") === "1"
     };
 
     await window.bastionAPI.updates.updateConfig(patch);
@@ -1362,6 +1366,13 @@ function buildSettingsPage() {
     ? escapeHtml(updateStatus.availableVersion)
     : "None";
   const checkedAtText = updateStatus.checkedAt ? escapeHtml(formatDateTime(updateStatus.checkedAt)) : "Never";
+  const updateSource = updateStatus.source ? escapeHtml(updateStatus.source) : "none";
+  const updateFilePath = updateStatus.updateFilePath
+    ? `<div class="muted">Downloaded file: ${escapeHtml(updateStatus.updateFilePath)}</div>`
+    : "";
+  const updateReleasePage = updateStatus.releasePage
+    ? `<div class="muted"><a href="${escapeHtml(updateStatus.releasePage)}">Open release page</a></div>`
+    : "";
   const updaterError = updateStatus.error
     ? `<div class="muted">Error: ${escapeHtml(updateStatus.error)}</div>`
     : "";
@@ -1392,6 +1403,8 @@ function buildSettingsPage() {
     <div class="card">
       <h3>Chromium/Electron Auto Update</h3>
       <form id="updatesForm" class="grid">
+        <label><input id="useGithubReleaseZip" type="checkbox" ${checked(update.useGithubReleaseZip)} /> Use GitHub release ZIP updater at launch (downloads latest update.zip)</label>
+        <label><input id="autoApplyGithubZip" type="checkbox" ${checked(update.autoApplyGithubZip)} /> Auto-apply downloaded update.zip on launch (Windows packaged app)</label>
         <label><input id="autoCheck" type="checkbox" ${checked(update.autoCheck)} /> Auto check for updates</label>
         <label><input id="autoDownload" type="checkbox" ${checked(update.autoDownload)} /> Auto download updates</label>
         <label><input id="allowPrerelease" type="checkbox" ${checked(update.allowPrerelease)} /> Allow prerelease builds</label>
@@ -1407,9 +1420,12 @@ function buildSettingsPage() {
         </div>
       </form>
       <div class="muted">Status: ${escapeHtml(updateStatusText)} (${updateMessage})</div>
+      <div class="muted">Updater source: ${updateSource}</div>
       <div class="muted">Current version: ${currentVersion}</div>
       <div class="muted">Available version: ${availableVersion}</div>
       <div class="muted">Last checked: ${checkedAtText}</div>
+      ${updateFilePath}
+      ${updateReleasePage}
       ${updaterError}
     </div>
 
@@ -1481,6 +1497,8 @@ function buildSettingsPage() {
     updatesForm.addEventListener('submit', (event) => {
       event.preventDefault();
       const q = new URLSearchParams();
+      q.set('useGithubReleaseZip', document.getElementById('useGithubReleaseZip').checked ? '1' : '0');
+      q.set('autoApplyGithubZip', document.getElementById('autoApplyGithubZip').checked ? '1' : '0');
       q.set('autoCheck', document.getElementById('autoCheck').checked ? '1' : '0');
       q.set('autoDownload', document.getElementById('autoDownload').checked ? '1' : '0');
       q.set('allowPrerelease', document.getElementById('allowPrerelease').checked ? '1' : '0');
