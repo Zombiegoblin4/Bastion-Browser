@@ -1,4 +1,4 @@
-# Bastion Browser
+# Bastion Browser v0.2.0
 
 Bastion Browser is a custom desktop web browser built with Electron and Chromium.
 
@@ -12,7 +12,7 @@ It includes:
 - Offline built-in game at `about:game`
 - Disk persistence for downloads and browsing history
 - Chrome extension loading support for unpacked extensions
-- Local auto-update controls (Electron/Chromium runtime updates)
+- Local auto-update controls (Electron/Chromium runtime updates + GitHub ZIP updater)
 - Privacy controls (tracker blocking, HTTPS upgrades, DNT/GPC, third-party cookie stripping)
 - Windows `.bat` launcher and `.exe` packaging setup
 
@@ -38,6 +38,7 @@ npm.cmd start
 
 1. Open `build-bastion-exe.bat`
 2. Setup + portable builds are generated in `dist/`
+3. `dist/update.zip` is generated automatically for GitHub release publishing
 
 Or use commands:
 
@@ -50,6 +51,7 @@ Build output names:
 
 - `dist/Bastion-Browser-<version>-x64-Setup.exe`
 - `dist/Bastion-Browser-<version>-x64-Portable.exe`
+- `dist/update.zip`
 
 ## Extension Support
 
@@ -62,15 +64,27 @@ Each extension folder must include `manifest.json`.
 
 Note: Electron does not guarantee support for every Chrome extension API. Many extensions work, but some may be partially supported.
 
-## Auto Update Feed
+## Auto Update
 
-Set an update feed URL in `about:settings` or with:
+Bastion can run two updater modes from `about:settings`:
+
+- GitHub release ZIP updater (default): checks the latest tag from `https://github.com/Zombiegoblin4/Bastion-Browser/releases/tags` and downloads `update.zip` on launch when auto-check is enabled.
+- GitHub release ZIP auto-apply: after download, Bastion can automatically extract `update.zip`, launch the included updater executable, and exit.
+- Electron updater feed: checks a generic update feed URL.
+
+Set a generic feed URL with:
 
 ```powershell
 $env:BASTION_UPDATE_URL="https://updates.example.com/bastion/win/"
 ```
 
-Auto-update checks run in packaged builds (`.exe`), not in dev source mode.
+Optional environment overrides for GitHub mode:
+
+```powershell
+$env:BASTION_GITHUB_RELEASES_API_URL="https://api.github.com/repos/Zombiegoblin4/Bastion-Browser/releases"
+$env:BASTION_GITHUB_RELEASES_TAGS_URL="https://github.com/Zombiegoblin4/Bastion-Browser/releases/tags"
+$env:BASTION_GITHUB_UPDATE_ASSET_NAME="update.zip"
+```
 
 ## Project Structure
 
