@@ -1,13 +1,16 @@
 "use strict";
 
 const HOME_URL = "https://duckduckgo.com/";
+const NEW_TAB_URL = "about:newtab";
 const SEARCH_PREFIX = "https://duckduckgo.com/?q=";
 const SETTINGS_KEY = "bastion.settings.v2";
 const BOOKMARKS_KEY = "bastion.bookmarks.v1";
 const SESSION_KEY = "bastion.session.v1";
+const NEW_TAB_KEY = "bastion.newtab.v1";
 const MAX_TABS = 20;
 const MAX_BOOKMARKS = 80;
 const MAX_CLOSED_TABS = 30;
+const MAX_NEW_TAB_LINKS = 8;
 
 const DEFAULT_FAVICON = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
 
@@ -37,6 +40,38 @@ const DEFAULT_PRIVACY_CONFIG = {
   clearDataOnExit: false
 };
 
+const NEW_TAB_BACKGROUND_OPTIONS = {
+  steel: {
+    label: "Steel",
+    css: "linear-gradient(135deg, #0a1018 0%, #102038 52%, #0b1422 100%)"
+  },
+  dawn: {
+    label: "Dawn",
+    css: "linear-gradient(135deg, #20120f 0%, #532018 52%, #162233 100%)"
+  },
+  forest: {
+    label: "Forest",
+    css: "linear-gradient(135deg, #08120f 0%, #12342a 52%, #0a1820 100%)"
+  },
+  cobalt: {
+    label: "Cobalt",
+    css: "linear-gradient(135deg, #0a1022 0%, #1a2464 52%, #0f1a32 100%)"
+  }
+};
+
+const DEFAULT_NEW_TAB_CONFIG = {
+  title: "Bastion New Tab",
+  subtitle: "DuckDuckGo search, quick links, and a clean launch point.",
+  showClock: true,
+  backgroundStyle: "steel",
+  links: [
+    { label: "DuckDuckGo", url: "https://duckduckgo.com/" },
+    { label: "YouTube", url: "https://www.youtube.com/" },
+    { label: "GitHub", url: "https://github.com/" },
+    { label: "Bastion Settings", url: "about:settings" }
+  ]
+};
+
 const state = {
   tabs: [],
   activeTabId: null,
@@ -45,6 +80,7 @@ const state = {
     ...DEFAULT_SETTINGS,
     ...loadJson(SETTINGS_KEY, {})
   },
+  newTab: sanitizeNewTabConfig(loadJson(NEW_TAB_KEY, {})),
   bookmarks: loadJson(BOOKMARKS_KEY, []),
   downloads: [],
   history: [],
@@ -107,7 +143,7 @@ function init() {
   syncWindowState();
 
   window.bastionAPI.navigation.onNewTab((url) => {
-    createTab(url || HOME_URL, true);
+    createTab(url || NEW_TAB_URL, true);
   });
 
   window.bastionAPI.extensions.onUpdated((extensions) => {
@@ -204,7 +240,7 @@ function bindGlobalEvents() {
 
       if (key === "t") {
         event.preventDefault();
-        createTab(HOME_URL, true);
+        createTab(NEW_TAB_URL, true);
         return;
       }
 
@@ -242,7 +278,7 @@ function bindGlobalEvents() {
 }
 
 function bindToolbarEvents() {
-  dom.newTabBtn.addEventListener("click", () => createTab(HOME_URL, true));
+  dom.newTabBtn.addEventListener("click", () => createTab(NEW_TAB_URL, true));
 
   dom.addressForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -289,7 +325,7 @@ function bindWindowControls() {
   }
 }
 
-function createTab(rawAddress = HOME_URL, makeActive = true) {
+function createTab(rawAddress = NEW_TAB_URL, makeActive = true) {
   if (state.tabs.length >= MAX_TABS) {
     showToast(`Tab limit reached (${MAX_TABS}). Close a tab first.`, true);
     return null;
@@ -541,7 +577,7 @@ function closeTab(tabId) {
 
   const [tab] = state.tabs.splice(index, 1);
   state.closedTabs.unshift({
-    url: tab.localPage ? getTabDisplayAddress(tab) : safeUrl(tab.webview) || tab.address || HOME_URL,
+    url: tab.localPage ? getTabDisplayAddress(tab) : safeUrl(tab.webview) || tab.address || NEW_TAB_URL,
     title: tab.title || "Closed Tab"
   });
   state.closedTabs = state.closedTabs.slice(0, MAX_CLOSED_TABS);
@@ -551,7 +587,7 @@ function closeTab(tabId) {
 
   if (state.tabs.length === 0) {
     state.activeTabId = null;
-    createTab(HOME_URL, true);
+    createTab(NEW_TAB_URL, true);
     return;
   }
 
@@ -570,7 +606,7 @@ function reopenLastClosedTab() {
     return;
   }
 
-  createTab(entry.url || HOME_URL, true);
+  createTab(entry.url || NEW_TAB_URL, true);
 }
 
 function getActiveTab() {
@@ -581,7 +617,7 @@ function getTabDisplayAddress(tab) {
   if (tab.localPage) {
     return `about:${tab.localPage}`;
   }
-  return tab.displayAddress || tab.address || HOME_URL;
+  return tab.displayAddress || tab.address || NEW_TAB_URL;
 }
 
 function navigateActiveTab(rawAddress) {
@@ -612,13 +648,17 @@ function navigateActiveTab(rawAddress) {
 function resolveAddress(raw) {
   const input = (raw || "").trim();
   if (!input) {
-    return { url: HOME_URL, display: HOME_URL, localPage: null };
+    return { url: buildNewTabPage(), display: NEW_TAB_URL, localPage: "newtab" };
   }
 
   const lowered = input.toLowerCase();
 
   if (lowered === "about:bastion" || lowered === "about:home" || lowered === "bastion://welcome") {
     return { url: buildWelcomePage(), display: "about:bastion", localPage: "bastion" };
+  }
+
+  if (lowered === "about:newtab" || lowered === "bastion://newtab") {
+    return { url: buildNewTabPage(), display: NEW_TAB_URL, localPage: "newtab" };
   }
 
   if (lowered === "about:settings" || lowered === "bastion://settings") {
@@ -784,6 +824,153 @@ function saveSettings() {
   saveJson(SETTINGS_KEY, state.settings);
 }
 
+function getDefaultNewTabConfig() {
+  return {
+    ...DEFAULT_NEW_TAB_CONFIG,
+    links: DEFAULT_NEW_TAB_CONFIG.links.map((item) => ({
+      label: item.label,
+      url: item.url
+    }))
+  };
+}
+
+function normalizeNewTabLinkUrl(rawUrl) {
+  const value = String(rawUrl || "").trim();
+  if (!value) {
+    return "";
+  }
+
+  if (/^javascript:/i.test(value)) {
+    return "";
+  }
+
+  if (
+    /^https?:\/\//i.test(value) ||
+    /^about:/i.test(value) ||
+    /^bastion:\/\//i.test(value) ||
+    /^file:\/\//i.test(value)
+  ) {
+    return value;
+  }
+
+  if (/^localhost(?::\d+)?(\/.*)?$/i.test(value)) {
+    return `http://${value}`;
+  }
+
+  if (value.includes(" ")) {
+    return "";
+  }
+
+  if (value.includes(".")) {
+    return `https://${value}`;
+  }
+
+  return "";
+}
+
+function deriveNewTabLinkLabel(urlValue) {
+  try {
+    const parsed = new URL(urlValue);
+    if (parsed.hostname) {
+      return parsed.hostname.replace(/^www\./i, "");
+    }
+  } catch (_) {
+    // Use fallback label below.
+  }
+
+  if (/^about:/i.test(urlValue)) {
+    return urlValue;
+  }
+
+  return "Quick Link";
+}
+
+function sanitizeNewTabLink(entry) {
+  const raw = entry && typeof entry === "object" ? entry : {};
+  const normalizedUrl = normalizeNewTabLinkUrl(raw.url);
+  if (!normalizedUrl) {
+    return null;
+  }
+
+  let label = String(raw.label || "").trim();
+  if (!label) {
+    label = deriveNewTabLinkLabel(normalizedUrl);
+  }
+  if (label.length > 32) {
+    label = `${label.slice(0, 31)}...`;
+  }
+
+  return {
+    label,
+    url: normalizedUrl
+  };
+}
+
+function sanitizeNewTabConfig(payload) {
+  const defaults = getDefaultNewTabConfig();
+  const raw = payload && typeof payload === "object" ? payload : {};
+  const style = String(raw.backgroundStyle || defaults.backgroundStyle);
+  const selectedStyle = Object.prototype.hasOwnProperty.call(NEW_TAB_BACKGROUND_OPTIONS, style)
+    ? style
+    : defaults.backgroundStyle;
+  const rawLinks = Array.isArray(raw.links) ? raw.links : defaults.links;
+  const links = [];
+
+  for (const item of rawLinks) {
+    const sanitized = sanitizeNewTabLink(item);
+    if (sanitized) {
+      links.push(sanitized);
+    }
+    if (links.length >= MAX_NEW_TAB_LINKS) {
+      break;
+    }
+  }
+
+  return {
+    title: String(raw.title || defaults.title).trim() || defaults.title,
+    subtitle: String(raw.subtitle || defaults.subtitle).trim() || defaults.subtitle,
+    showClock: typeof raw.showClock === "boolean" ? raw.showClock : defaults.showClock,
+    backgroundStyle: selectedStyle,
+    links: links.length > 0 ? links : defaults.links
+  };
+}
+
+function saveNewTabConfig() {
+  state.newTab = sanitizeNewTabConfig(state.newTab);
+  saveJson(NEW_TAB_KEY, state.newTab);
+}
+
+function parseNewTabLinksText(rawText) {
+  const source = String(rawText || "");
+  const lines = source.split(/\r?\n/);
+  const links = [];
+
+  for (const line of lines) {
+    const cleaned = line.trim();
+    if (!cleaned) {
+      continue;
+    }
+
+    let label = "";
+    let url = cleaned;
+    if (cleaned.includes("|")) {
+      const [left, ...rest] = cleaned.split("|");
+      label = left.trim();
+      url = rest.join("|").trim();
+    }
+
+    const sanitized = sanitizeNewTabLink({ label, url });
+    if (sanitized) {
+      links.push(sanitized);
+    }
+    if (links.length >= MAX_NEW_TAB_LINKS) {
+      break;
+    }
+  }
+
+  return links;
+}
+
 function renderBookmarks() {
   dom.bookmarksBar.innerHTML = "";
 
@@ -920,7 +1107,7 @@ function addHistoryEntry(url, title) {
 function restoreTabsOrCreateFresh() {
   const restored = restoreSession();
   if (!restored) {
-    createTab(HOME_URL, true);
+    createTab(NEW_TAB_URL, true);
   }
 }
 
@@ -958,7 +1145,7 @@ function persistSession() {
   }
 
   const tabs = state.tabs.map((tab) => ({
-    url: tab.localPage ? getTabDisplayAddress(tab) : safeUrl(tab.webview) || tab.address || HOME_URL
+    url: tab.localPage ? getTabDisplayAddress(tab) : safeUrl(tab.webview) || tab.address || NEW_TAB_URL
   })).slice(0, MAX_TABS);
 
   const activeIndex = state.tabs.findIndex((tab) => tab.id === state.activeTabId);
@@ -1008,6 +1195,8 @@ function isInternalAlias(url) {
     value === "about:bastion" ||
     value === "about:home" ||
     value === "bastion://welcome" ||
+    value === "about:newtab" ||
+    value === "bastion://newtab" ||
     value === "about:settings" ||
     value === "bastion://settings" ||
     value === "about:downloads" ||
@@ -1059,6 +1248,30 @@ async function handleLocalAction(url, tab) {
       showToast(result && result.error ? result.error : "Failed to load extension.", true);
     }
     refreshLocalPage(tab);
+    return;
+  }
+
+  if (key === "newtab/save") {
+    const nextLinks = parseNewTabLinksText(parsed.searchParams.get("links") || "");
+    state.newTab = sanitizeNewTabConfig({
+      ...state.newTab,
+      title: parsed.searchParams.get("title") || "",
+      subtitle: parsed.searchParams.get("subtitle") || "",
+      showClock: parsed.searchParams.get("showClock") === "1",
+      backgroundStyle: parsed.searchParams.get("backgroundStyle") || "",
+      links: nextLinks.length > 0 ? nextLinks : state.newTab.links
+    });
+    saveNewTabConfig();
+    showToast("New tab updated.");
+    refreshOpenNewTabPages();
+    return;
+  }
+
+  if (key === "newtab/reset") {
+    state.newTab = getDefaultNewTabConfig();
+    saveNewTabConfig();
+    showToast("New tab reset to defaults.");
+    refreshOpenNewTabPages();
     return;
   }
 
@@ -1222,6 +1435,14 @@ function refreshOpenLocalPages() {
     }
   }
 }
+
+function refreshOpenNewTabPages() {
+  for (const tab of state.tabs) {
+    if (tab.localPage === "newtab") {
+      refreshLocalPage(tab);
+    }
+  }
+}
 function buildLocalPage(title, bodyHtml, script = "") {
   const html = `
 <!doctype html>
@@ -1316,6 +1537,7 @@ function buildWelcomePage() {
     <h1>Bastion Browser</h1>
     <p>DuckDuckGo is your default search engine. This browser includes local pages for settings, downloads, history and an offline game.</p>
     <div class="row">
+      <a href="about:newtab">Open New Tab</a>
       <a href="about:settings">Open Settings</a>
       <a href="about:downloads">View Downloads</a>
       <a href="about:history">View History</a>
@@ -1335,6 +1557,152 @@ function buildWelcomePage() {
   `;
 
   return buildLocalPage("Bastion Home", body);
+}
+
+function buildNewTabPage() {
+  const config = sanitizeNewTabConfig(state.newTab);
+  const backgroundOption = NEW_TAB_BACKGROUND_OPTIONS[config.backgroundStyle] || NEW_TAB_BACKGROUND_OPTIONS.steel;
+  const optionRows = Object.entries(NEW_TAB_BACKGROUND_OPTIONS).map(([value, detail]) => {
+    const selected = value === config.backgroundStyle ? "selected" : "";
+    return `<option value="${escapeHtml(value)}" ${selected}>${escapeHtml(detail.label)}</option>`;
+  }).join("");
+
+  const quickLinks = config.links.length > 0
+    ? config.links.map((link) => {
+        const compactUrl = escapeHtml(link.url.replace(/^https?:\/\//i, "").replace(/\/$/, ""));
+        return `<a class="quick-link" href="${escapeHtml(link.url)}"><strong>${escapeHtml(link.label)}</strong><span>${compactUrl}</span></a>`;
+      }).join("")
+    : '<div class="card"><div class="muted">No quick links yet. Add some below.</div></div>';
+
+  const linksText = config.links.map((link) => `${link.label} | ${link.url}`).join("\n");
+  const clockStyle = config.showClock ? "" : 'style="display:none;"';
+
+  const body = `
+    <style>
+      .newtab-hero {
+        border: 1px solid #35506f;
+        padding: 18px;
+        margin-bottom: 16px;
+        background: ${escapeHtml(backgroundOption.css)};
+      }
+      .newtab-hero h1 { margin: 0 0 8px; font-size: 34px; }
+      .newtab-hero p { margin: 0; color: #c2d7ec; }
+      .clock { margin-top: 12px; color: #d7ebff; font-size: 24px; font-weight: 700; letter-spacing: 0.04em; }
+      .search-row { display: grid; grid-template-columns: minmax(160px, 1fr) auto; gap: 8px; margin-top: 14px; }
+      .search-row input, textarea, select {
+        border: 1px solid #3d5d7f;
+        background: #111a27;
+        color: #e6edf6;
+        border-radius: 0;
+        padding: 8px 10px;
+        font-family: inherit;
+        font-size: 14px;
+      }
+      textarea { min-height: 120px; resize: vertical; }
+      .quick-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+      }
+      .quick-link {
+        display: grid;
+        gap: 4px;
+        border: 1px solid #35506f;
+        background: #132235;
+        padding: 10px;
+        text-decoration: none;
+        color: #e6edf6;
+      }
+      .quick-link span {
+        color: #9bb7d3;
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+    </style>
+
+    <div class="newtab-hero">
+      <h1>${escapeHtml(config.title)}</h1>
+      <p>${escapeHtml(config.subtitle)}</p>
+      <div id="newtabClock" class="clock" ${clockStyle}>--:--:--</div>
+      <form id="newTabSearchForm" class="search-row">
+        <input id="newTabSearchInput" type="text" placeholder="Search DuckDuckGo" autocomplete="off" />
+        <button type="submit">Search</button>
+      </form>
+    </div>
+
+    <h2>Quick Links</h2>
+    <div class="quick-grid">${quickLinks}</div>
+
+    <h2>Customize New Tab</h2>
+    <div class="card">
+      <form id="newTabCustomizeForm" class="grid">
+        <label class="grid">
+          <span>Title</span>
+          <input id="newTabTitle" type="text" value="${escapeHtml(config.title)}" maxlength="60" />
+        </label>
+        <label class="grid">
+          <span>Subtitle</span>
+          <input id="newTabSubtitle" type="text" value="${escapeHtml(config.subtitle)}" maxlength="120" />
+        </label>
+        <label><input id="newTabShowClock" type="checkbox" ${config.showClock ? "checked" : ""} /> Show clock</label>
+        <label class="grid">
+          <span>Background style</span>
+          <select id="newTabBackgroundStyle">${optionRows}</select>
+        </label>
+        <label class="grid">
+          <span>Quick links (one per line: <code>Label | URL</code>)</span>
+          <textarea id="newTabLinks">${escapeHtml(linksText)}</textarea>
+        </label>
+        <div class="row">
+          <button type="submit">Save New Tab</button>
+          <a href="bastion-action://newtab/reset">Reset Defaults</a>
+          <a href="about:settings">Open Settings</a>
+        </div>
+      </form>
+    </div>
+  `;
+
+  const script = `
+    const searchPrefix = ${JSON.stringify(SEARCH_PREFIX)};
+    const showClock = ${config.showClock ? "true" : "false"};
+    const clockEl = document.getElementById('newtabClock');
+    const searchForm = document.getElementById('newTabSearchForm');
+    const searchInput = document.getElementById('newTabSearchInput');
+    const customizeForm = document.getElementById('newTabCustomizeForm');
+
+    function tickClock() {
+      if (!showClock || !clockEl) return;
+      clockEl.textContent = new Date().toLocaleTimeString();
+    }
+
+    if (showClock && clockEl) {
+      tickClock();
+      setInterval(tickClock, 1000);
+    }
+
+    searchInput.focus();
+    searchForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const query = searchInput.value.trim();
+      if (!query) return;
+      location.href = searchPrefix + encodeURIComponent(query);
+    });
+
+    customizeForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const q = new URLSearchParams();
+      q.set('title', document.getElementById('newTabTitle').value.trim());
+      q.set('subtitle', document.getElementById('newTabSubtitle').value.trim());
+      q.set('showClock', document.getElementById('newTabShowClock').checked ? '1' : '0');
+      q.set('backgroundStyle', document.getElementById('newTabBackgroundStyle').value);
+      q.set('links', document.getElementById('newTabLinks').value);
+      location.href = 'bastion-action://newtab/save?' + q.toString();
+    });
+  `;
+
+  return buildLocalPage("Bastion New Tab", body, script);
 }
 
 function buildSettingsPage() {
@@ -1471,6 +1839,7 @@ function buildSettingsPage() {
 
     <h2>Tools</h2>
     <div class="row">
+      <a href="about:newtab">Open New Tab Page</a>
       <a href="about:downloads">Open Downloads Page</a>
       <a href="about:history">Open History Page</a>
       <a href="about:game">Open Offline Game</a>
