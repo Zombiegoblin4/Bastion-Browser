@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bastion Browser</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell" id="appShell">
+      <header class="chrome-shell">
+        <div class="title-row drag-zone">
+          <div class="brand-block no-drag">
+            <button id="logoButton" class="logo-button" type="button">Bastion</button>
+            <div id="statusBadge" class="status-badge">Shielded Session</div>
+          </div>
+          <div class="window-controls no-drag">
+            <button id="minimizeBtn" type="button" class="window-btn" title="Minimize">_</button>
+            <button id="maximizeBtn" type="button" class="window-btn" title="Maximize">[]</button>
+            <button id="closeBtn" type="button" class="window-btn close" title="Close">X</button>
+          </div>
+        </div>
+
+        <div class="tabs-row">
+          <div id="tabStrip" class="tab-strip"></div>
+          <button id="newTabBtn" type="button" class="new-tab-btn">+ New Tab</button>
+        </div>
+
+        <form id="addressForm" class="nav-row">
+          <button id="backBtn" type="button" class="nav-btn" title="Back">Back</button>
+          <button id="forwardBtn" type="button" class="nav-btn" title="Forward">Forward</button>
+          <button id="refreshBtn" type="button" class="nav-btn" title="Reload">Reload</button>
+          <button id="homeBtn" type="button" class="nav-btn" title="Home">Home</button>
+          <input
+            id="addressInput"
+            class="address-input"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="Search DuckDuckGo or enter a URL"
+          />
+          <button id="bookmarkBtn" type="button" class="nav-btn" title="Bookmark">Bookmark</button>
+          <button id="fullscreenBtn" type="button" class="nav-btn" title="Fullscreen">Fullscreen</button>
+          <button id="settingsBtn" type="button" class="nav-btn" title="Settings">Settings</button>
+        </form>
+        <div class="page-progress-track">
+          <div id="pageProgressBar" class="page-progress-bar"></div>
+        </div>
+
+        <div id="bookmarksBar" class="bookmarks-bar"></div>
+      </header>
+
+      <main id="webviewDeck" class="webview-deck"></main>
+    </div>
+
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>
