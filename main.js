@@ -3,6 +3,12 @@
 const { app, BrowserWindow, dialog, ipcMain, session, shell } = require("electron");
 const fs = require("fs");
 const path = require("path");
+const { Readable } = require("stream");
+const { pipeline } = require("stream/promises");
+const { execFile, spawn } = require("child_process");
+const { promisify } = require("util");
+
+const execFileAsync = promisify(execFile);
 
 let autoUpdater = null;
 try {
@@ -18,6 +24,9 @@ let browsingHistory = [];
 
 const EXTENSIONS_DIR = path.join(__dirname, "extensions");
 const START_URL = path.join(__dirname, "src", "index.html");
+const GITHUB_RELEASES_API_URL = "https://api.github.com/repos/Zombiegoblin4/Bastion-Browser/releases";
+const GITHUB_RELEASES_TAGS_PAGE_URL = "https://github.com/Zombiegoblin4/Bastion-Browser/releases/tags";
+const GITHUB_UPDATE_ASSET_NAME = "update.zip";
 
 const TRACKER_HOST_RULES = [
   "doubleclick.net",
@@ -94,13 +103,16 @@ const DEFAULT_UPDATE_CONFIG = {
   autoCheck: true,
   autoDownload: true,
   allowPrerelease: false,
-  feedURL: ""
+  feedURL: "",
+  useGithubReleaseZip: true,
+  autoApplyGithubZip: true
 };
 
 let privacyConfig = { ...DEFAULT_PRIVACY_CONFIG };
 let updateConfig = { ...DEFAULT_UPDATE_CONFIG };
 let privacyStats = createEmptyPrivacyStats();
 let updateStatus = createInitialUpdateStatus();
+let githubUpdateMetadata = createInitialGitHubUpdateMetadata();
 
 let privacyNetworkConfigured = false;
 let updaterConfigured = false;
@@ -123,13 +135,29 @@ function createInitialUpdateStatus() {
     status: "idle",
     message: "Updater idle.",
     currentVersion: app.getVersion(),
+    source: "none",
     availableVersion: null,
     downloadedVersion: null,
+    updateFilePath: null,
+    releasePage: null,
     progressPercent: 0,
     checkedAt: null,
     isPackaged: app.isPackaged,
     error: null,
     updatedAt: Date.now()
+  };
+}
+
+function createInitialGitHubUpdateMetadata() {
+  return {
+    lastTag: "",
+    filePath: "",
+    downloadedAt: 0,
+    sizeBytes: 0,
+    assetName: GITHUB_UPDATE_ASSET_NAME,
+    releasePage: "",
+    lastAppliedTag: "",
+    appliedAt: 0
   };
 }
 
@@ -183,6 +211,14 @@ function getUpdateStorePath() {
   return path.join(app.getPath("userData"), "updates.json");
 }
 
+function getGitHubUpdateMetaStorePath() {
+  return path.join(app.getPath("userData"), "github-release-update.json");
+}
+
+function getGitHubUpdateDownloadDir() {
+  return path.join(app.getPath("userData"), "updates");
+}
+
 function sanitizePrivacyConfig(payload) {
   const raw = payload && typeof payload === "object" ? payload : {};
   return {
@@ -211,7 +247,29 @@ function sanitizeUpdateConfig(payload) {
     autoCheck: sanitizeBoolean(raw.autoCheck, DEFAULT_UPDATE_CONFIG.autoCheck),
     autoDownload: sanitizeBoolean(raw.autoDownload, DEFAULT_UPDATE_CONFIG.autoDownload),
     allowPrerelease: sanitizeBoolean(raw.allowPrerelease, DEFAULT_UPDATE_CONFIG.allowPrerelease),
-    feedURL: sanitizeString(raw.feedURL, DEFAULT_UPDATE_CONFIG.feedURL).trim()
+    feedURL: sanitizeString(raw.feedURL, DEFAULT_UPDATE_CONFIG.feedURL).trim(),
+    useGithubReleaseZip: sanitizeBoolean(
+      raw.useGithubReleaseZip,
+      DEFAULT_UPDATE_CONFIG.useGithubReleaseZip
+    ),
+    autoApplyGithubZip: sanitizeBoolean(
+      raw.autoApplyGithubZip,
+      DEFAULT_UPDATE_CONFIG.autoApplyGithubZip
+    )
+  };
+}
+
+function sanitizeGitHubUpdateMetadata(payload) {
+  const raw = payload && typeof payload === "object" ? payload : {};
+  return {
+    lastTag: sanitizeString(raw.lastTag, ""),
+    filePath: sanitizeString(raw.filePath, ""),
+    downloadedAt: Number(raw.downloadedAt || 0),
+    sizeBytes: Number(raw.sizeBytes || 0),
+    assetName: sanitizeString(raw.assetName, GITHUB_UPDATE_ASSET_NAME),
+    releasePage: sanitizeString(raw.releasePage, ""),
+    lastAppliedTag: sanitizeString(raw.lastAppliedTag, ""),
+    appliedAt: Number(raw.appliedAt || 0)
   };
 }
 
@@ -284,11 +342,19 @@ function persistUpdateConfig() {
   writeJsonFile(getUpdateStorePath(), updateConfig);
 }
 
+function persistGitHubUpdateMetadata() {
+  writeJsonFile(getGitHubUpdateMetaStorePath(), githubUpdateMetadata);
+}
+
 function loadPersistedState() {
   const downloadsPayload = readJsonFile(getDownloadsStorePath(), { items: [] });
   const historyPayload = readJsonFile(getHistoryStorePath(), { items: [] });
   const privacyPayload = readJsonFile(getPrivacyStorePath(), DEFAULT_PRIVACY_CONFIG);
   const updatePayload = readJsonFile(getUpdateStorePath(), DEFAULT_UPDATE_CONFIG);
+  const githubUpdatePayload = readJsonFile(
+    getGitHubUpdateMetaStorePath(),
+    createInitialGitHubUpdateMetadata()
+  );
 
   downloadItems = Array.isArray(downloadsPayload.items)
     ? downloadsPayload.items.map(sanitizeDownloadRecord).slice(0, 300)
@@ -300,6 +366,7 @@ function loadPersistedState() {
 
   privacyConfig = sanitizePrivacyConfig(privacyPayload);
   updateConfig = sanitizeUpdateConfig(updatePayload);
+  githubUpdateMetadata = sanitizeGitHubUpdateMetadata(githubUpdatePayload);
 }
 
 function getWindow() {
@@ -835,6 +902,623 @@ function resolveUpdateFeedURL() {
   return updateConfig.feedURL;
 }
 
+function shouldUseGitHubReleaseZipUpdater() {
+  return Boolean(updateConfig.useGithubReleaseZip);
+}
+
+function resolveGitHubReleasesApiURL() {
+  const fromEnv = sanitizeString(process.env.BASTION_GITHUB_RELEASES_API_URL, "").trim();
+  return fromEnv || GITHUB_RELEASES_API_URL;
+}
+
+function resolveGitHubTagsPageURL() {
+  const fromEnv = sanitizeString(process.env.BASTION_GITHUB_RELEASES_TAGS_URL, "").trim();
+  return fromEnv || GITHUB_RELEASES_TAGS_PAGE_URL;
+}
+
+function resolveGitHubUpdateAssetName() {
+  const fromEnv = sanitizeString(process.env.BASTION_GITHUB_UPDATE_ASSET_NAME, "").trim();
+  return fromEnv || GITHUB_UPDATE_ASSET_NAME;
+}
+
+function buildGitHubRequestHeaders() {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": `BastionBrowser/${app.getVersion()}`
+  };
+
+  const token = sanitizeString(process.env.BASTION_GITHUB_TOKEN, "").trim() ||
+    sanitizeString(process.env.GITHUB_TOKEN, "").trim();
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  return headers;
+}
+
+function normalizeVersionFromTag(tagValue) {
+  const tag = String(tagValue || "").trim();
+  if (!tag) {
+    return "";
+  }
+  return tag.replace(/^v/i, "");
+}
+
+function parseVersionParts(versionValue) {
+  const source = String(versionValue || "").trim();
+  if (!source) {
+    return [];
+  }
+
+  return source
+    .split(/[^0-9]+/)
+    .filter((part) => part.length > 0)
+    .map((part) => Number(part))
+    .filter((part) => Number.isFinite(part));
+}
+
+function compareVersions(leftVersion, rightVersion) {
+  const left = parseVersionParts(leftVersion);
+  const right = parseVersionParts(rightVersion);
+
+  if (left.length === 0 || right.length === 0) {
+    return 0;
+  }
+
+  const maxLength = Math.max(left.length, right.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftValue = left[index] || 0;
+    const rightValue = right[index] || 0;
+    if (leftValue > rightValue) {
+      return 1;
+    }
+    if (leftValue < rightValue) {
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+function sanitizeTagForPath(tagValue) {
+  const normalized = String(tagValue || "").trim().replace(/[^a-z0-9._-]+/gi, "_");
+  return normalized || "latest";
+}
+
+function resolveGitHubUpdateTargetPath(tagValue) {
+  const safeTag = sanitizeTagForPath(tagValue);
+  const fileName = resolveGitHubUpdateAssetName();
+  return path.join(getGitHubUpdateDownloadDir(), safeTag, fileName);
+}
+
+function resolveGitHubUpdateStagingDir(tagValue) {
+  const safeTag = sanitizeTagForPath(tagValue);
+  return path.join(getGitHubUpdateDownloadDir(), "staged", safeTag);
+}
+
+function findReleaseAsset(release, assetName) {
+  const assets = Array.isArray(release && release.assets) ? release.assets : [];
+  const wantedName = String(assetName || "").toLowerCase();
+  return assets.find((asset) => String((asset && asset.name) || "").toLowerCase() === wantedName) || null;
+}
+
+function ensureFetchAvailable() {
+  if (typeof fetch !== "function") {
+    throw new Error("This runtime does not provide fetch() support.");
+  }
+}
+
+async function fetchLatestGitHubRelease() {
+  ensureFetchAvailable();
+  const apiURL = resolveGitHubReleasesApiURL();
+  const response = await fetch(apiURL, {
+    method: "GET",
+    headers: buildGitHubRequestHeaders(),
+    redirect: "follow"
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub releases request failed (${response.status}).`);
+  }
+
+  const payload = await response.json();
+  const releases = Array.isArray(payload) ? payload : [];
+  const nonDraftReleases = releases.filter((release) => release && !release.draft);
+  const preferred = nonDraftReleases.filter((release) =>
+    updateConfig.allowPrerelease ? true : !release.prerelease
+  );
+  const selectionPool = preferred.length > 0 ? preferred : nonDraftReleases;
+  const sorted = selectionPool.sort((left, right) => {
+    const leftTime = Date.parse(
+      String((left && (left.published_at || left.created_at || left.createdAt)) || "")
+    ) || 0;
+    const rightTime = Date.parse(
+      String((right && (right.published_at || right.created_at || right.createdAt)) || "")
+    ) || 0;
+    return rightTime - leftTime;
+  });
+
+  return sorted[0] || null;
+}
+
+async function downloadGitHubAssetToPath(assetURL, targetPath) {
+  ensureFetchAvailable();
+  const response = await fetch(assetURL, {
+    method: "GET",
+    headers: buildGitHubRequestHeaders(),
+    redirect: "follow"
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub asset download failed (${response.status}).`);
+  }
+
+  if (!response.body) {
+    throw new Error("GitHub asset download returned an empty response body.");
+  }
+
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+
+  const tempPath = `${targetPath}.download`;
+  try {
+    await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(tempPath));
+    fs.renameSync(tempPath, targetPath);
+  } catch (error) {
+    if (fs.existsSync(tempPath)) {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch (_) {
+        // Best-effort cleanup.
+      }
+    }
+    throw error;
+  }
+
+  const stats = fs.statSync(targetPath);
+  return {
+    filePath: targetPath,
+    sizeBytes: Number(stats.size || 0)
+  };
+}
+
+function escapePowerShellLiteral(value) {
+  return String(value || "").replaceAll("'", "''");
+}
+
+async function expandArchiveOnWindows(zipPath, destinationPath) {
+  const command = [
+    "$ErrorActionPreference='Stop';",
+    `Expand-Archive -LiteralPath '${escapePowerShellLiteral(zipPath)}'`,
+    `-DestinationPath '${escapePowerShellLiteral(destinationPath)}' -Force`
+  ].join(" ");
+
+  await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+    { windowsHide: true }
+  );
+}
+
+function collectFilesRecursive(rootDir) {
+  const files = [];
+  const queue = [rootDir];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch (_) {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(fullPath);
+        continue;
+      }
+      files.push(fullPath);
+    }
+  }
+
+  return files;
+}
+
+function scoreLauncherCandidate(filePath) {
+  const name = path.basename(filePath).toLowerCase();
+  if (name.includes("uninstall")) {
+    return -100;
+  }
+
+  let score = 0;
+  if (name.includes("setup")) {
+    score += 60;
+  }
+  if (name.includes("installer")) {
+    score += 50;
+  }
+  if (name.includes("update")) {
+    score += 40;
+  }
+  if (name.includes("portable")) {
+    score += 30;
+  }
+  if (name.includes("bastion")) {
+    score += 20;
+  }
+
+  const ext = path.extname(name);
+  if (ext === ".exe") {
+    score += 25;
+  } else if (ext === ".cmd" || ext === ".bat") {
+    score += 10;
+  } else {
+    score -= 10;
+  }
+
+  return score;
+}
+
+function pickUpdateLauncherFromExtractedFiles(files) {
+  const candidates = files.filter((filePath) => {
+    const ext = path.extname(filePath).toLowerCase();
+    return ext === ".exe" || ext === ".cmd" || ext === ".bat";
+  });
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  candidates.sort((left, right) => {
+    const scoreDiff = scoreLauncherCandidate(right) - scoreLauncherCandidate(left);
+    if (scoreDiff !== 0) {
+      return scoreDiff;
+    }
+    return left.length - right.length;
+  });
+
+  return candidates[0];
+}
+
+function launchDetachedFile(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  let command = filePath;
+  let args = [];
+
+  if (ext === ".cmd" || ext === ".bat") {
+    command = "cmd.exe";
+    args = ["/c", filePath];
+  }
+
+  const child = spawn(command, args, {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true
+  });
+  child.unref();
+}
+
+async function applyGitHubReleaseZipUpdate(options = {}) {
+  const opts = {
+    manual: false,
+    tag: githubUpdateMetadata.lastTag,
+    zipPath: githubUpdateMetadata.filePath,
+    releasePage: githubUpdateMetadata.releasePage,
+    ...options
+  };
+
+  const tag = String(opts.tag || "").trim();
+  const zipPath = String(opts.zipPath || "").trim();
+  const releasePage = String(opts.releasePage || "").trim();
+
+  if (process.platform !== "win32") {
+    return { ok: false, error: "Automatic ZIP apply is currently implemented for Windows only." };
+  }
+
+  if (!zipPath || !fs.existsSync(zipPath)) {
+    return { ok: false, error: "No downloaded update.zip was found to apply." };
+  }
+
+  if (!opts.manual && tag && githubUpdateMetadata.lastAppliedTag === tag) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "already-applied",
+      tag
+    };
+  }
+
+  const stageDir = resolveGitHubUpdateStagingDir(tag || "latest");
+  setUpdateStatus({
+    source: "github-release-zip",
+    status: "installing",
+    message: `Applying ${path.basename(zipPath)}...`,
+    availableVersion: tag ? normalizeVersionFromTag(tag) || tag : updateStatus.availableVersion,
+    updateFilePath: zipPath,
+    releasePage: releasePage || updateStatus.releasePage,
+    progressPercent: 100,
+    checkedAt: Date.now(),
+    error: null
+  });
+
+  try {
+    fs.rmSync(stageDir, { recursive: true, force: true });
+    fs.mkdirSync(stageDir, { recursive: true });
+  } catch (_) {
+    // Continue even if cleanup is partial.
+  }
+
+  try {
+    await expandArchiveOnWindows(zipPath, stageDir);
+    const extractedFiles = collectFilesRecursive(stageDir);
+    const launcherPath = pickUpdateLauncherFromExtractedFiles(extractedFiles);
+
+    if (!launcherPath) {
+      throw new Error("No launcher executable (.exe/.cmd/.bat) found in update.zip.");
+    }
+
+    launchDetachedFile(launcherPath);
+
+    githubUpdateMetadata = {
+      ...githubUpdateMetadata,
+      lastAppliedTag: tag,
+      appliedAt: Date.now(),
+      releasePage: releasePage || githubUpdateMetadata.releasePage
+    };
+    persistGitHubUpdateMetadata();
+
+    setUpdateStatus({
+      source: "github-release-zip",
+      status: "installing",
+      message: `Launching updater: ${path.basename(launcherPath)}`,
+      updateFilePath: zipPath,
+      releasePage: releasePage || updateStatus.releasePage,
+      error: null
+    });
+
+    setTimeout(() => {
+      app.quit();
+    }, 420);
+
+    return {
+      ok: true,
+      tag,
+      launcherPath,
+      stagedPath: stageDir
+    };
+  } catch (error) {
+    const message = getErrorMessage(error);
+    setUpdateStatus({
+      source: "github-release-zip",
+      status: "error",
+      message: "Failed to apply downloaded update.zip.",
+      updateFilePath: zipPath,
+      releasePage: releasePage || updateStatus.releasePage,
+      checkedAt: Date.now(),
+      error: message
+    });
+    return { ok: false, error: message };
+  }
+}
+
+async function checkGitHubReleaseZipUpdate(options = {}) {
+  const opts = {
+    manual: false,
+    download: false,
+    forceDownload: false,
+    ...options
+  };
+
+  const assetName = resolveGitHubUpdateAssetName();
+  const tagsPageURL = resolveGitHubTagsPageURL();
+
+  setUpdateStatus({
+    source: "github-release-zip",
+    status: "checking",
+    message: `Checking GitHub release tags for ${assetName}...`,
+    availableVersion: null,
+    downloadedVersion: null,
+    updateFilePath: null,
+    releasePage: tagsPageURL,
+    progressPercent: 0,
+    checkedAt: Date.now(),
+    error: null
+  });
+
+  let release;
+  try {
+    release = await fetchLatestGitHubRelease();
+  } catch (error) {
+    const message = getErrorMessage(error);
+    setUpdateStatus({
+      source: "github-release-zip",
+      status: "error",
+      message: "Failed to fetch GitHub release tags.",
+      checkedAt: Date.now(),
+      error: message
+    });
+    return { ok: false, error: message };
+  }
+
+  if (!release || !release.tag_name) {
+    const message = "No GitHub release tags found.";
+    setUpdateStatus({
+      source: "github-release-zip",
+      status: "idle",
+      message,
+      checkedAt: Date.now(),
+      error: null
+    });
+    return { ok: false, error: message };
+  }
+
+  const tag = String(release.tag_name || "").trim();
+  const normalizedVersion = normalizeVersionFromTag(tag);
+  const normalizedCurrentVersion = normalizeVersionFromTag(app.getVersion());
+  const releasePage = sanitizeString(release.html_url, "") || tagsPageURL;
+  const asset = findReleaseAsset(release, assetName);
+
+  const latestParts = parseVersionParts(normalizedVersion);
+  const currentParts = parseVersionParts(normalizedCurrentVersion);
+  if (
+    latestParts.length > 0 &&
+    currentParts.length > 0 &&
+    compareVersions(normalizedVersion, normalizedCurrentVersion) <= 0
+  ) {
+    setUpdateStatus({
+      source: "github-release-zip",
+      status: "idle",
+      message: `You are already on version ${app.getVersion()}.`,
+      availableVersion: normalizedVersion || tag,
+      downloadedVersion: normalizedVersion || tag,
+      updateFilePath: githubUpdateMetadata.filePath || null,
+      releasePage,
+      progressPercent: 100,
+      checkedAt: Date.now(),
+      error: null
+    });
+    return {
+      ok: true,
+      upToDate: true,
+      tag,
+      filePath: githubUpdateMetadata.filePath || ""
+    };
+  }
+
+  if (!asset || !asset.browser_download_url) {
+    const message = `Latest tag ${tag} has no ${assetName} asset.`;
+    setUpdateStatus({
+      source: "github-release-zip",
+      status: "error",
+      message,
+      availableVersion: normalizedVersion || tag,
+      checkedAt: Date.now(),
+      releasePage,
+      error: message
+    });
+    return { ok: false, error: message };
+  }
+
+  const hasDownloadedFile = Boolean(
+    githubUpdateMetadata.lastTag === tag &&
+    githubUpdateMetadata.filePath &&
+    fs.existsSync(githubUpdateMetadata.filePath)
+  );
+
+  if (hasDownloadedFile && !opts.forceDownload) {
+    const alreadyApplied = Boolean(tag && githubUpdateMetadata.lastAppliedTag === tag);
+    setUpdateStatus({
+      source: "github-release-zip",
+      status: alreadyApplied ? "idle" : "downloaded",
+      message: alreadyApplied
+        ? `Latest tag ${tag} is already applied.`
+        : `Latest tag ${tag} is already downloaded.`,
+      availableVersion: normalizedVersion || tag,
+      downloadedVersion: normalizedVersion || tag,
+      updateFilePath: githubUpdateMetadata.filePath,
+      releasePage,
+      progressPercent: 100,
+      checkedAt: Date.now(),
+      error: null
+    });
+    return {
+      ok: true,
+      alreadyDownloaded: true,
+      alreadyApplied,
+      tag,
+      filePath: githubUpdateMetadata.filePath,
+      releasePage
+    };
+  }
+
+  if (!opts.download) {
+    setUpdateStatus({
+      source: "github-release-zip",
+      status: "available",
+      message: `GitHub update ${tag} is available.`,
+      availableVersion: normalizedVersion || tag,
+      downloadedVersion: null,
+      updateFilePath: null,
+      releasePage,
+      progressPercent: 0,
+      checkedAt: Date.now(),
+      error: null
+    });
+    return {
+      ok: true,
+      available: true,
+      tag,
+      downloadURL: asset.browser_download_url,
+      releasePage
+    };
+  }
+
+  setUpdateStatus({
+    source: "github-release-zip",
+    status: "downloading",
+    message: `Downloading ${assetName} from ${tag}...`,
+    availableVersion: normalizedVersion || tag,
+    downloadedVersion: null,
+    updateFilePath: null,
+    releasePage,
+    progressPercent: 0,
+    checkedAt: Date.now(),
+    error: null
+  });
+
+  try {
+    const destinationPath = resolveGitHubUpdateTargetPath(tag);
+    const result = await downloadGitHubAssetToPath(asset.browser_download_url, destinationPath);
+
+    githubUpdateMetadata = {
+      ...githubUpdateMetadata,
+      lastTag: tag,
+      filePath: result.filePath,
+      downloadedAt: Date.now(),
+      sizeBytes: result.sizeBytes,
+      assetName,
+      releasePage
+    };
+    persistGitHubUpdateMetadata();
+
+    setUpdateStatus({
+      source: "github-release-zip",
+      status: "downloaded",
+      message: `Downloaded ${assetName} from ${tag}.`,
+      availableVersion: normalizedVersion || tag,
+      downloadedVersion: normalizedVersion || tag,
+      updateFilePath: result.filePath,
+      releasePage,
+      progressPercent: 100,
+      checkedAt: Date.now(),
+      error: null
+    });
+
+    return {
+      ok: true,
+      downloaded: true,
+      tag,
+      filePath: result.filePath,
+      sizeBytes: result.sizeBytes,
+      releasePage
+    };
+  } catch (error) {
+    const message = getErrorMessage(error);
+    setUpdateStatus({
+      source: "github-release-zip",
+      status: "error",
+      message: "Failed to download update.zip from GitHub.",
+      availableVersion: normalizedVersion || tag,
+      checkedAt: Date.now(),
+      releasePage,
+      error: message
+    });
+    return { ok: false, error: message };
+  }
+}
+
 function bindUpdaterEvents() {
   if (!autoUpdater || updaterEventsBound) {
     return;
@@ -842,8 +1526,10 @@ function bindUpdaterEvents() {
 
   autoUpdater.on("checking-for-update", () => {
     setUpdateStatus({
+      source: "electron-updater",
       status: "checking",
       message: "Checking for updates...",
+      updateFilePath: null,
       error: null,
       checkedAt: Date.now(),
       progressPercent: 0
@@ -853,12 +1539,14 @@ function bindUpdaterEvents() {
   autoUpdater.on("update-available", (info) => {
     const availableVersion = getUpdateVersion(info);
     setUpdateStatus({
+      source: "electron-updater",
       status: updateConfig.autoDownload ? "downloading" : "available",
       message: updateConfig.autoDownload
         ? "Update available. Downloading now..."
         : "Update available. Download is waiting.",
       availableVersion,
       downloadedVersion: null,
+      updateFilePath: null,
       checkedAt: Date.now(),
       error: null,
       progressPercent: 0
@@ -867,10 +1555,12 @@ function bindUpdaterEvents() {
 
   autoUpdater.on("update-not-available", () => {
     setUpdateStatus({
+      source: "electron-updater",
       status: "idle",
       message: "You are running the latest version.",
       availableVersion: null,
       downloadedVersion: null,
+      updateFilePath: null,
       checkedAt: Date.now(),
       error: null,
       progressPercent: 0
@@ -880,8 +1570,10 @@ function bindUpdaterEvents() {
   autoUpdater.on("download-progress", (progress) => {
     const percent = Math.max(0, Math.min(100, Math.round(Number((progress && progress.percent) || 0))));
     setUpdateStatus({
+      source: "electron-updater",
       status: "downloading",
       message: `Downloading update (${percent}%)...`,
+      updateFilePath: null,
       progressPercent: percent,
       error: null
     });
@@ -890,10 +1582,12 @@ function bindUpdaterEvents() {
   autoUpdater.on("update-downloaded", (info) => {
     const downloadedVersion = getUpdateVersion(info);
     setUpdateStatus({
+      source: "electron-updater",
       status: "downloaded",
       message: "Update downloaded. Restart Bastion to install.",
       availableVersion: downloadedVersion || updateStatus.availableVersion,
       downloadedVersion,
+      updateFilePath: null,
       progressPercent: 100,
       error: null
     });
@@ -901,6 +1595,7 @@ function bindUpdaterEvents() {
 
   autoUpdater.on("error", (error) => {
     setUpdateStatus({
+      source: "electron-updater",
       status: "error",
       message: "Update check failed.",
       checkedAt: Date.now(),
@@ -915,6 +1610,10 @@ function configureUpdateSchedule() {
   if (updateCheckTimer) {
     clearInterval(updateCheckTimer);
     updateCheckTimer = null;
+  }
+
+  if (shouldUseGitHubReleaseZipUpdater()) {
+    return;
   }
 
   if (!autoUpdater || !updateConfig.autoCheck || !app.isPackaged) {
@@ -964,6 +1663,11 @@ function configureAutoUpdater() {
   }
 
   if (!autoUpdater) {
+    if (shouldUseGitHubReleaseZipUpdater()) {
+      updaterConfigured = true;
+      return;
+    }
+
     setUpdateStatus({
       status: "disabled",
       message: "Auto updater is unavailable. Install electron-updater dependency."
@@ -975,10 +1679,12 @@ function configureAutoUpdater() {
   bindUpdaterEvents();
   applyUpdaterConfig();
 
-  if (!app.isPackaged) {
+  if (!app.isPackaged && !shouldUseGitHubReleaseZipUpdater()) {
     setUpdateStatus({
+      source: "electron-updater",
       status: "idle",
       message: "Update checks run from packaged builds.",
+      updateFilePath: null,
       error: null
     });
   }
@@ -995,8 +1701,10 @@ async function checkForUpdates(manual = false) {
     const error = "Updates can only be checked from packaged builds.";
     if (manual) {
       setUpdateStatus({
+        source: "electron-updater",
         status: "idle",
         message: error,
+        updateFilePath: null,
         checkedAt: Date.now(),
         error: null
       });
@@ -1007,8 +1715,10 @@ async function checkForUpdates(manual = false) {
   try {
     if (manual) {
       setUpdateStatus({
+        source: "electron-updater",
         status: "checking",
         message: "Checking for updates...",
+        updateFilePath: null,
         checkedAt: Date.now(),
         error: null
       });
@@ -1022,8 +1732,10 @@ async function checkForUpdates(manual = false) {
   } catch (error) {
     const message = getErrorMessage(error);
     setUpdateStatus({
+      source: "electron-updater",
       status: "error",
       message: "Failed to check for updates.",
+      updateFilePath: null,
       checkedAt: Date.now(),
       error: message
     });
@@ -1046,8 +1758,10 @@ async function downloadAvailableUpdate() {
   } catch (error) {
     const message = getErrorMessage(error);
     setUpdateStatus({
+      source: "electron-updater",
       status: "error",
       message: "Failed to download update.",
+      updateFilePath: null,
       error: message
     });
     return { ok: false, error: message };
@@ -1055,6 +1769,15 @@ async function downloadAvailableUpdate() {
 }
 
 function installDownloadedUpdate() {
+  if (updateStatus.source === "github-release-zip") {
+    return applyGitHubReleaseZipUpdate({
+      manual: true,
+      tag: githubUpdateMetadata.lastTag || updateStatus.availableVersion,
+      zipPath: updateStatus.updateFilePath || githubUpdateMetadata.filePath,
+      releasePage: updateStatus.releasePage || githubUpdateMetadata.releasePage
+    });
+  }
+
   if (!autoUpdater) {
     return { ok: false, error: "Auto updater module unavailable." };
   }
@@ -1068,6 +1791,7 @@ function installDownloadedUpdate() {
   }
 
   setUpdateStatus({
+    source: "electron-updater",
     status: "installing",
     message: "Installing update and restarting..."
   });
@@ -1092,6 +1816,17 @@ function patchUpdateConfig(patch) {
   persistUpdateConfig();
   applyUpdaterConfig();
   sendUpdateConfig();
+
+  if (!autoUpdater && !shouldUseGitHubReleaseZipUpdater()) {
+    setUpdateStatus({
+      source: "none",
+      status: "disabled",
+      message: "No updater backend is enabled.",
+      updateFilePath: null,
+      error: "Enable GitHub release ZIP updater or install electron-updater backend."
+    });
+  }
+
   return updateConfig;
 }
 
@@ -1362,10 +2097,16 @@ function wireIpc() {
   });
 
   ipcMain.handle("updates:check", () => {
+    if (shouldUseGitHubReleaseZipUpdater()) {
+      return checkGitHubReleaseZipUpdate({ manual: true, download: false });
+    }
     return checkForUpdates(true);
   });
 
   ipcMain.handle("updates:download", () => {
+    if (shouldUseGitHubReleaseZipUpdater()) {
+      return checkGitHubReleaseZipUpdate({ manual: true, download: true });
+    }
     return downloadAvailableUpdate();
   });
 
@@ -1407,9 +2148,43 @@ app.whenReady().then(async () => {
   createWindow();
 
   if (updateConfig.autoCheck) {
-    checkForUpdates(false).catch(() => {
-      // Status update already handled by updater events.
-    });
+    if (shouldUseGitHubReleaseZipUpdater()) {
+      checkGitHubReleaseZipUpdate({
+        manual: false,
+        download: true
+      })
+        .then((result) => {
+          if (!updateConfig.autoApplyGithubZip || !app.isPackaged) {
+            return;
+          }
+
+          if (!result || !result.ok || result.alreadyApplied || result.upToDate) {
+            return;
+          }
+
+          const zipPath = String(result.filePath || "").trim();
+          const tag = String(result.tag || "").trim();
+          if (!zipPath) {
+            return;
+          }
+
+          applyGitHubReleaseZipUpdate({
+            manual: false,
+            tag,
+            zipPath,
+            releasePage: result.releasePage || updateStatus.releasePage
+          }).catch(() => {
+            // Status update already handled by apply path.
+          });
+        })
+        .catch(() => {
+          // Status update already handled by updater state.
+        });
+    } else {
+      checkForUpdates(false).catch(() => {
+        // Status update already handled by updater events.
+      });
+    }
   }
 
   app.on("activate", () => {
