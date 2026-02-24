@@ -7,6 +7,7 @@ It includes:
 - DuckDuckGo as the default search engine
 - Fullscreen support (including site-driven fullscreen on pages like YouTube)
 - A clean browser UI with tabs, bookmarks, and custom window controls
+- Customizable built-in new tab page (`about:newtab`) with quick links
 - Tab favicons, loading progress bar, and reopen closed tab support
 - Local pages: `about:settings`, `about:downloads`, `about:history`, `about:game`
 - Offline built-in game at `about:game`
