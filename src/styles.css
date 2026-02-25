@@ -11,6 +11,8 @@
   --danger: #f87171;
   --ok: #22c55e;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --radius-pill: 999px;
+  --radius-soft: 16px;
 }
 
 * {
@@ -42,6 +44,7 @@ body {
 }
 
 .chrome-shell {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -75,7 +78,7 @@ body {
   border: 1px solid var(--border-strong);
   color: var(--text);
   background: var(--bg-elev-2);
-  border-radius: 0;
+  border-radius: var(--radius-pill);
   padding: 6px 12px;
   font-family: "Sora", "Segoe UI", sans-serif;
   font-weight: 700;
@@ -101,7 +104,7 @@ body {
   min-width: 34px;
   min-height: 28px;
   border: 1px solid var(--border-strong);
-  border-radius: 0;
+  border-radius: var(--radius-pill);
   background: var(--bg-elev-2);
   color: var(--text);
   font-size: 12px;
@@ -145,7 +148,7 @@ body {
   background: #142030;
   min-width: 160px;
   max-width: 240px;
-  border-radius: 0;
+  border-radius: var(--radius-soft);
   color: var(--muted);
   padding: 6px 8px;
   display: flex;
@@ -177,7 +180,7 @@ body {
 .tab-favicon {
   width: 16px;
   height: 16px;
-  border-radius: 0;
+  border-radius: 50%;
   object-fit: cover;
   flex: 0 0 16px;
 }
@@ -190,7 +193,7 @@ body {
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
-  border-radius: 0;
+  border-radius: 50%;
   width: 24px;
   height: 24px;
   cursor: pointer;
@@ -206,7 +209,7 @@ body {
   border: 1px solid var(--border-strong);
   background: var(--bg-elev-2);
   color: var(--text);
-  border-radius: 0;
+  border-radius: var(--radius-pill);
   padding: 8px 12px;
   font-weight: 600;
   cursor: pointer;
@@ -218,13 +221,13 @@ body {
 
 .nav-row {
   display: grid;
-  grid-template-columns: repeat(4, auto) minmax(260px, 1fr) repeat(3, auto);
+  grid-template-columns: repeat(4, auto) minmax(260px, 1fr) repeat(4, auto);
   gap: 8px;
 }
 
 .nav-btn {
   border: 1px solid var(--border-strong);
-  border-radius: 0;
+  border-radius: var(--radius-pill);
   background: var(--bg-elev-2);
   color: var(--text);
   min-height: 34px;
@@ -249,7 +252,7 @@ body {
 
 .address-input {
   border: 1px solid var(--border-strong);
-  border-radius: 0;
+  border-radius: var(--radius-pill);
   min-height: 34px;
   padding: 0 12px;
   background: #111a27;
@@ -294,7 +297,7 @@ body {
 
 .bookmark-chip {
   border: 1px solid var(--border-strong);
-  border-radius: 0;
+  border-radius: var(--radius-pill);
   background: var(--bg-elev-2);
   color: var(--text);
   font-size: 12px;
@@ -340,7 +343,7 @@ body {
   min-width: 220px;
   max-width: 320px;
   border: 1px solid var(--border-strong);
-  border-radius: 0;
+  border-radius: var(--radius-soft);
   background: #152235;
   color: var(--text);
   padding: 10px 12px;
@@ -373,7 +376,7 @@ body.no-motion *::after {
 
 @media (max-width: 1080px) {
   .nav-row {
-    grid-template-columns: repeat(3, auto) minmax(180px, 1fr) repeat(3, auto);
+    grid-template-columns: repeat(3, auto) minmax(180px, 1fr) repeat(4, auto);
   }
 
   #homeBtn {
@@ -391,8 +394,77 @@ body.no-motion *::after {
   }
 
   .nav-row {
-    grid-template-columns: repeat(2, auto) minmax(120px, 1fr) repeat(4, auto);
+    grid-template-columns: repeat(2, auto) minmax(120px, 1fr) repeat(5, auto);
   }
+}
+
+.nav-icon-btn {
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+.bookmark-btn::before {
+  content: "*";
+  font-size: 18px;
+  line-height: 1;
+}
+
+.bookmark-btn.is-active {
+  border-color: #facc15;
+  color: #facc15;
+  background: rgba(250, 204, 21, 0.12);
+}
+
+.menu-btn {
+  letter-spacing: 0.05em;
+  font-size: 16px;
+}
+
+.browser-menu {
+  position: absolute;
+  top: 124px;
+  right: 16px;
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-soft);
+  background: #142235;
+  padding: 8px;
+  z-index: 18;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32);
+}
+
+.browser-menu.hidden {
+  display: none;
+}
+
+.menu-item {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: #1a2b41;
+  color: var(--text);
+  text-align: left;
+  min-height: 32px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.menu-item:hover {
+  background: #243955;
+}
+
+.menu-item.danger {
+  border-color: rgba(248, 113, 113, 0.65);
+}
+
+.menu-item.danger:hover {
+  background: rgba(248, 113, 113, 0.2);
 }
 
 @keyframes toast-in {
