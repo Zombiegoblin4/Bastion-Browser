@@ -17,3 +17,5 @@ extensions/
 You can also load extension folders while the app is running from:
 
 `Settings -> Extensions -> Load Extension Folder`
+
+Note: Bastion can also auto-manage uBlock Origin updates at launch. Managed files are stored in your user profile, not in this folder.
