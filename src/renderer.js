@@ -27,7 +27,8 @@ const DEFAULT_UPDATE_CONFIG = {
   allowPrerelease: false,
   feedURL: "",
   useGithubReleaseZip: true,
-  autoApplyGithubZip: true
+  autoApplyGithubZip: true,
+  autoUpdateUblockOrigin: true
 };
 
 const DEFAULT_PRIVACY_CONFIG = {
@@ -36,6 +37,7 @@ const DEFAULT_PRIVACY_CONFIG = {
   sendDoNotTrack: true,
   sendGlobalPrivacyControl: true,
   blockThirdPartyCookies: true,
+  stripThirdPartyReferer: true,
   blockFingerprintingPermissions: true,
   clearDataOnExit: false
 };
@@ -70,6 +72,16 @@ const DEFAULT_NEW_TAB_CONFIG = {
     { label: "GitHub", url: "https://github.com/" },
     { label: "Bastion Settings", url: "about:settings" }
   ]
+};
+
+const LOCAL_PAGE_TITLES = {
+  bastion: "Bastion Home",
+  newtab: "New Tab",
+  settings: "Settings",
+  downloads: "Downloads",
+  history: "History",
+  game: "Offline Game",
+  error: "Page Error"
 };
 
 const state = {
@@ -107,6 +119,8 @@ const dom = {
   bookmarkBtn: document.getElementById("bookmarkBtn"),
   fullscreenBtn: document.getElementById("fullscreenBtn"),
   settingsBtn: document.getElementById("settingsBtn"),
+  menuBtn: document.getElementById("menuBtn"),
+  browserMenu: document.getElementById("browserMenu"),
   pageProgressBar: document.getElementById("pageProgressBar"),
   bookmarksBar: document.getElementById("bookmarksBar"),
   statusBadge: document.getElementById("statusBadge"),
@@ -212,6 +226,10 @@ function bindGlobalEvents() {
       return;
     }
 
+    if (event.key === "Escape") {
+      hideBrowserMenu();
+    }
+
     if (event.altKey && !isInput && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
       event.preventDefault();
       if (event.key === "ArrowLeft") {
@@ -306,7 +324,29 @@ function bindToolbarEvents() {
   dom.bookmarkBtn.addEventListener("click", toggleBookmarkForActiveTab);
   dom.fullscreenBtn.addEventListener("click", toggleFullscreen);
   dom.settingsBtn.addEventListener("click", openSettingsPage);
+  dom.menuBtn.addEventListener("click", toggleBrowserMenu);
   dom.logoButton.addEventListener("click", () => navigateActiveTab(HOME_URL));
+
+  if (dom.browserMenu) {
+    dom.browserMenu.addEventListener("click", handleBrowserMenuAction);
+  }
+
+  document.addEventListener("click", (event) => {
+    if (!dom.browserMenu || !dom.menuBtn) {
+      return;
+    }
+
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (!target) {
+      return;
+    }
+
+    if (target.closest("#browserMenu") || target.closest("#menuBtn")) {
+      return;
+    }
+
+    hideBrowserMenu();
+  });
 }
 
 function bindWindowControls() {
@@ -322,6 +362,106 @@ function bindWindowControls() {
       }
       window.bastionAPI.window.maximizeToggle();
     });
+  }
+}
+
+function toggleBrowserMenu() {
+  if (!dom.browserMenu) {
+    return;
+  }
+
+  const willShow = dom.browserMenu.classList.contains("hidden");
+  dom.browserMenu.classList.toggle("hidden", !willShow);
+}
+
+function hideBrowserMenu() {
+  if (!dom.browserMenu) {
+    return;
+  }
+  dom.browserMenu.classList.add("hidden");
+}
+
+async function handleBrowserMenuAction(event) {
+  const button = event.target instanceof HTMLElement
+    ? event.target.closest("[data-menu-action]")
+    : null;
+
+  if (!button) {
+    return;
+  }
+
+  const action = String(button.getAttribute("data-menu-action") || "");
+  hideBrowserMenu();
+
+  const tab = getActiveTab();
+  if (!tab) {
+    return;
+  }
+
+  if (action === "print") {
+    if (tab.localPage) {
+      showToast("Print is only available for website tabs.", true);
+      return;
+    }
+    tab.webview.executeJavaScript("window.print();").catch(() => {
+      showToast("Unable to print this page.", true);
+    });
+    return;
+  }
+
+  if (action === "inspect") {
+    if (tab.webview && typeof tab.webview.openDevTools === "function") {
+      tab.webview.openDevTools({ mode: "detach" });
+    }
+    return;
+  }
+
+  if (action === "source") {
+    const currentUrl = tab.localPage ? "" : (safeUrl(tab.webview) || tab.address || "");
+    if (!/^https?:\/\//i.test(currentUrl)) {
+      showToast("Page source works on HTTP/HTTPS pages.", true);
+      return;
+    }
+    createTab(`view-source:${currentUrl}`, true);
+    return;
+  }
+
+  if (action === "copy-url") {
+    const value = getTabDisplayAddress(tab);
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast("URL copied.");
+    } catch (_) {
+      showToast("Unable to copy URL.", true);
+    }
+    return;
+  }
+
+  if (action === "downloads") {
+    navigateActiveTab("about:downloads");
+    return;
+  }
+
+  if (action === "history") {
+    navigateActiveTab("about:history");
+    return;
+  }
+
+  if (action === "settings") {
+    openSettingsPage();
+    return;
+  }
+
+  if (action === "newtab") {
+    createTab(NEW_TAB_URL, true);
+    return;
+  }
+
+  if (action === "clear-history") {
+    await window.bastionAPI.history.clear();
+    await refreshHistory();
+    showToast("History cleared.");
+    refreshOpenLocalPages();
   }
 }
 
@@ -372,7 +512,7 @@ function createTab(rawAddress = NEW_TAB_URL, makeActive = true) {
 
   const tab = {
     id,
-    title: "New Tab",
+    title: resolved.localPage ? getLocalPageTitle(resolved.localPage) : "New Tab",
     address: resolved.url,
     displayAddress: resolved.display,
     localPage: resolved.localPage,
@@ -383,6 +523,8 @@ function createTab(rawAddress = NEW_TAB_URL, makeActive = true) {
     webview,
     isLoading: false
   };
+
+  tab.tabTitle.textContent = trimTabTitle(tab.title);
 
   state.tabs.push(tab);
 
@@ -458,6 +600,22 @@ function wireWebviewEvents(tab) {
     persistSession();
   });
 
+  tab.webview.addEventListener("did-redirect-navigation", (event) => {
+    if (!event || !event.url) {
+      return;
+    }
+
+    tab.address = event.url;
+    if (!tab.localPage) {
+      tab.displayAddress = event.url;
+      updateTabFavicon(tab, inferFavicon(event.url));
+    }
+
+    if (tab.id === state.activeTabId) {
+      dom.addressInput.value = getTabDisplayAddress(tab);
+    }
+  });
+
   tab.webview.addEventListener("did-navigate-in-page", (event) => {
     tab.address = event.url;
     if (tab.id === state.activeTabId) {
@@ -478,7 +636,23 @@ function wireWebviewEvents(tab) {
 
   tab.webview.addEventListener("page-favicon-updated", (event) => {
     if (!tab.localPage && event.favicons && event.favicons.length > 0) {
-      updateTabFavicon(tab, event.favicons[0]);
+      const candidate = pickBestFavicon(event.favicons);
+      updateTabFavicon(tab, candidate || inferFavicon(tab.address));
+    }
+  });
+
+  tab.webview.addEventListener("did-finish-load", () => {
+    const currentUrl = safeUrl(tab.webview);
+    if (!currentUrl || tab.localPage) {
+      return;
+    }
+
+    tab.address = currentUrl;
+    tab.displayAddress = currentUrl;
+    updateTabFavicon(tab, inferFavicon(currentUrl));
+
+    if (tab.id === state.activeTabId) {
+      dom.addressInput.value = currentUrl;
     }
   });
 
@@ -634,6 +808,10 @@ function navigateActiveTab(rawAddress) {
   tab.localPage = resolved.localPage;
   tab.address = resolved.url;
   tab.displayAddress = resolved.display;
+  if (resolved.localPage) {
+    tab.title = getLocalPageTitle(resolved.localPage);
+    tab.tabTitle.textContent = trimTabTitle(tab.title);
+  }
 
   tab.webview.loadURL(resolved.url);
   dom.addressInput.value = resolved.display;
@@ -643,6 +821,42 @@ function navigateActiveTab(rawAddress) {
   } else {
     updateTabFavicon(tab, DEFAULT_FAVICON);
   }
+}
+
+function toTitleCase(value) {
+  return String(value || "")
+    .replaceAll("-", " ")
+    .split(" ")
+    .filter((part) => part.length > 0)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function getLocalPageTitle(localPage) {
+  const key = String(localPage || "").toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(LOCAL_PAGE_TITLES, key)) {
+    return LOCAL_PAGE_TITLES[key];
+  }
+
+  if (key.startsWith("about-")) {
+    return `About ${toTitleCase(key.replace(/^about-/, ""))}`;
+  }
+
+  return "Bastion Page";
+}
+
+function buildGenericAboutPage(slug) {
+  const title = `About ${toTitleCase(slug)}`;
+  const body = `
+    <h1>${escapeHtml(title)}</h1>
+    <p>This local page is reserved for <code>about:${escapeHtml(slug)}</code>.</p>
+    <div class="row">
+      <a href="about:newtab">Open New Tab</a>
+      <a href="about:settings">Open Settings</a>
+    </div>
+  `;
+
+  return buildLocalPage(title, body);
 }
 
 function resolveAddress(raw) {
@@ -675,6 +889,16 @@ function resolveAddress(raw) {
 
   if (lowered === "about:game" || lowered === "bastion://game") {
     return { url: buildGamePage(), display: "about:game", localPage: "game" };
+  }
+
+  const aboutMatch = lowered.match(/^about:([a-z0-9-]+)$/i);
+  if (aboutMatch && aboutMatch[1] !== "blank") {
+    const slug = aboutMatch[1].toLowerCase();
+    return {
+      url: buildGenericAboutPage(slug),
+      display: `about:${slug}`,
+      localPage: `about-${slug}`
+    };
   }
 
   if (/^https?:\/\//i.test(input) || /^file:\/\//i.test(input) || /^data:/i.test(input)) {
@@ -1039,12 +1263,14 @@ function updateBookmarkButtonState() {
   const tab = getActiveTab();
   if (!tab || tab.localPage) {
     dom.bookmarkBtn.classList.remove("is-active");
+    dom.bookmarkBtn.title = "Bookmark";
     return;
   }
 
   const url = safeUrl(tab.webview) || tab.address;
   const isSaved = state.bookmarks.some((bookmark) => bookmark.url === url);
   dom.bookmarkBtn.classList.toggle("is-active", isSaved);
+  dom.bookmarkBtn.title = isSaved ? "Remove Bookmark" : "Bookmark";
 }
 
 async function refreshMetaInfo() {
@@ -1177,6 +1403,10 @@ function handleSpecialNavigation(url, tab, event) {
     tab.localPage = resolved.localPage;
     tab.address = resolved.url;
     tab.displayAddress = resolved.display;
+    if (resolved.localPage) {
+      tab.title = getLocalPageTitle(resolved.localPage);
+      tab.tabTitle.textContent = trimTabTitle(tab.title);
+    }
     tab.webview.loadURL(resolved.url);
 
     if (tab.id === state.activeTabId) {
@@ -1191,6 +1421,14 @@ function handleSpecialNavigation(url, tab, event) {
 
 function isInternalAlias(url) {
   const value = String(url || "").toLowerCase();
+  if (/^about:[a-z0-9-]+$/i.test(value) && value !== "about:blank") {
+    return true;
+  }
+
+  if (/^bastion:\/\/[a-z0-9-]+$/i.test(value)) {
+    return true;
+  }
+
   return (
     value === "about:bastion" ||
     value === "about:home" ||
@@ -1282,7 +1520,8 @@ async function handleLocalAction(url, tab) {
       allowPrerelease: parsed.searchParams.get("allowPrerelease") === "1",
       feedURL: (parsed.searchParams.get("feedURL") || "").trim(),
       useGithubReleaseZip: parsed.searchParams.get("useGithubReleaseZip") === "1",
-      autoApplyGithubZip: parsed.searchParams.get("autoApplyGithubZip") === "1"
+      autoApplyGithubZip: parsed.searchParams.get("autoApplyGithubZip") === "1",
+      autoUpdateUblockOrigin: parsed.searchParams.get("autoUpdateUblockOrigin") === "1"
     };
 
     await window.bastionAPI.updates.updateConfig(patch);
@@ -1338,6 +1577,7 @@ async function handleLocalAction(url, tab) {
       sendDoNotTrack: parsed.searchParams.get("sendDoNotTrack") === "1",
       sendGlobalPrivacyControl: parsed.searchParams.get("sendGlobalPrivacyControl") === "1",
       blockThirdPartyCookies: parsed.searchParams.get("blockThirdPartyCookies") === "1",
+      stripThirdPartyReferer: parsed.searchParams.get("stripThirdPartyReferer") === "1",
       blockFingerprintingPermissions: parsed.searchParams.get("blockFingerprintingPermissions") === "1",
       clearDataOnExit: parsed.searchParams.get("clearDataOnExit") === "1"
     };
@@ -1421,6 +1661,8 @@ function refreshLocalPage(tab) {
 
   tab.address = resolved.url;
   tab.displayAddress = resolved.display;
+  tab.title = getLocalPageTitle(tab.localPage);
+  tab.tabTitle.textContent = trimTabTitle(tab.title);
   tab.webview.loadURL(resolved.url);
 
   if (tab.id === state.activeTabId) {
@@ -1773,6 +2015,7 @@ function buildSettingsPage() {
       <form id="updatesForm" class="grid">
         <label><input id="useGithubReleaseZip" type="checkbox" ${checked(update.useGithubReleaseZip)} /> Use GitHub release ZIP updater at launch (downloads latest update.zip)</label>
         <label><input id="autoApplyGithubZip" type="checkbox" ${checked(update.autoApplyGithubZip)} /> Auto-apply downloaded update.zip on launch (Windows packaged app)</label>
+        <label><input id="autoUpdateUblockOrigin" type="checkbox" ${checked(update.autoUpdateUblockOrigin)} /> Auto-check and update managed uBlock Origin on launch</label>
         <label><input id="autoCheck" type="checkbox" ${checked(update.autoCheck)} /> Auto check for updates</label>
         <label><input id="autoDownload" type="checkbox" ${checked(update.autoDownload)} /> Auto download updates</label>
         <label><input id="allowPrerelease" type="checkbox" ${checked(update.allowPrerelease)} /> Allow prerelease builds</label>
@@ -1806,6 +2049,7 @@ function buildSettingsPage() {
         <label><input id="sendDoNotTrack" type="checkbox" ${checked(privacy.sendDoNotTrack)} /> Send Do Not Track header</label>
         <label><input id="sendGlobalPrivacyControl" type="checkbox" ${checked(privacy.sendGlobalPrivacyControl)} /> Send Global Privacy Control header</label>
         <label><input id="blockThirdPartyCookies" type="checkbox" ${checked(privacy.blockThirdPartyCookies)} /> Strip third-party cookie headers</label>
+        <label><input id="stripThirdPartyReferer" type="checkbox" ${checked(privacy.stripThirdPartyReferer)} /> Strip third-party Referer headers</label>
         <label><input id="blockFingerprintingPermissions" type="checkbox" ${checked(privacy.blockFingerprintingPermissions)} /> Block fingerprinting-related permissions</label>
         <label><input id="clearDataOnExit" type="checkbox" ${checked(privacy.clearDataOnExit)} /> Clear cache/history/downloads on app exit</label>
         <div class="row">
@@ -1826,6 +2070,7 @@ function buildSettingsPage() {
       <div class="muted">Blocked tracker requests: ${escapeHtml(String(privacyStats.blockedRequests || 0))}</div>
       <div class="muted">HTTP upgrades to HTTPS: ${escapeHtml(String(privacyStats.upgradedToHttps || 0))}</div>
       <div class="muted">Stripped cookie headers: ${escapeHtml(String(privacyStats.strippedCookieHeaders || 0))}</div>
+      <div class="muted">Stripped Referer headers: ${escapeHtml(String(privacyStats.strippedRefererHeaders || 0))}</div>
       <div class="muted">Blocked permission prompts: ${escapeHtml(String(privacyStats.blockedPermissions || 0))}</div>
       <div class="muted">Tracking since: ${statsStartedAt}</div>
     </div>
@@ -1868,6 +2113,7 @@ function buildSettingsPage() {
       const q = new URLSearchParams();
       q.set('useGithubReleaseZip', document.getElementById('useGithubReleaseZip').checked ? '1' : '0');
       q.set('autoApplyGithubZip', document.getElementById('autoApplyGithubZip').checked ? '1' : '0');
+      q.set('autoUpdateUblockOrigin', document.getElementById('autoUpdateUblockOrigin').checked ? '1' : '0');
       q.set('autoCheck', document.getElementById('autoCheck').checked ? '1' : '0');
       q.set('autoDownload', document.getElementById('autoDownload').checked ? '1' : '0');
       q.set('allowPrerelease', document.getElementById('allowPrerelease').checked ? '1' : '0');
@@ -1884,6 +2130,7 @@ function buildSettingsPage() {
       q.set('sendDoNotTrack', document.getElementById('sendDoNotTrack').checked ? '1' : '0');
       q.set('sendGlobalPrivacyControl', document.getElementById('sendGlobalPrivacyControl').checked ? '1' : '0');
       q.set('blockThirdPartyCookies', document.getElementById('blockThirdPartyCookies').checked ? '1' : '0');
+      q.set('stripThirdPartyReferer', document.getElementById('stripThirdPartyReferer').checked ? '1' : '0');
       q.set('blockFingerprintingPermissions', document.getElementById('blockFingerprintingPermissions').checked ? '1' : '0');
       q.set('clearDataOnExit', document.getElementById('clearDataOnExit').checked ? '1' : '0');
       location.href = 'bastion-action://privacy/save?' + q.toString();
@@ -2124,6 +2371,26 @@ function updateTabFavicon(tab, faviconUrl) {
     return;
   }
   tab.favicon.src = faviconUrl || DEFAULT_FAVICON;
+}
+
+function pickBestFavicon(favicons) {
+  if (!Array.isArray(favicons) || favicons.length === 0) {
+    return "";
+  }
+
+  const cleaned = favicons
+    .map((item) => String(item || "").trim())
+    .filter((item) => item.length > 0);
+
+  if (cleaned.length === 0) {
+    return "";
+  }
+
+  const preferred = cleaned.find((item) => /^https:\/\//i.test(item)) ||
+    cleaned.find((item) => /^http:\/\//i.test(item)) ||
+    cleaned.find((item) => /^data:image\//i.test(item));
+
+  return preferred || cleaned[0];
 }
 
 function inferFavicon(url) {
