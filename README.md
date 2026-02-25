@@ -1,4 +1,4 @@
-# Bastion Browser v0.2.0
+# Bastion Browser v0.4.0
 
 Bastion Browser is a custom desktop web browser built with Electron and Chromium.
 
@@ -14,7 +14,9 @@ It includes:
 - Disk persistence for downloads and browsing history
 - Chrome extension loading support for unpacked extensions
 - Local auto-update controls (Electron/Chromium runtime updates + GitHub ZIP updater)
-- Privacy controls (tracker blocking, HTTPS upgrades, DNT/GPC, third-party cookie stripping)
+- Startup update-check mini window (app/chromium/extensions status)
+- Managed uBlock Origin install + auto-check/update on startup
+- Privacy controls (tracker blocking, HTTPS upgrades, DNT/GPC, third-party cookie/referer stripping)
 - Windows `.bat` launcher and `.exe` packaging setup
 
 ## Requirements
@@ -72,6 +74,7 @@ Bastion can run two updater modes from `about:settings`:
 - GitHub release ZIP updater (default): checks the latest tag from `https://github.com/Zombiegoblin4/Bastion-Browser/releases/tags` and downloads `update.zip` on launch when auto-check is enabled.
 - GitHub release ZIP auto-apply: after download, Bastion can automatically extract `update.zip`, launch the included updater executable, and exit.
 - Electron updater feed: checks a generic update feed URL.
+- Managed extension updater: checks uBlock Origin releases and installs the latest Chromium extension package at launch.
 
 Set a generic feed URL with:
 
@@ -85,6 +88,13 @@ Optional environment overrides for GitHub mode:
 $env:BASTION_GITHUB_RELEASES_API_URL="https://api.github.com/repos/Zombiegoblin4/Bastion-Browser/releases"
 $env:BASTION_GITHUB_RELEASES_TAGS_URL="https://github.com/Zombiegoblin4/Bastion-Browser/releases/tags"
 $env:BASTION_GITHUB_UPDATE_ASSET_NAME="update.zip"
+```
+
+Optional environment overrides for managed uBlock Origin updates:
+
+```powershell
+$env:BASTION_UBLOCK_RELEASES_API_URL="https://api.github.com/repos/gorhill/uBlock/releases"
+$env:BASTION_UBLOCK_RELEASES_PAGE_URL="https://github.com/gorhill/uBlock/releases"
 ```
 
 ## Project Structure
