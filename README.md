@@ -106,3 +106,13 @@ $env:BASTION_UBLOCK_RELEASES_PAGE_URL="https://github.com/gorhill/uBlock/release
 - `src/renderer.js`: Tabs, navigation, local pages, history, downloads, bookmarks
 - `launch-bastion.bat`: One-click run script
 - `build-bastion-exe.bat`: One-click build script
+
+## Screenshots
+- newtab
+<img width="2221" height="1368" alt="Schermafbeelding 2026-02-25 130024" src="https://github.com/user-attachments/assets/0a02310e-0224-4d9b-9c99-78880a3b7dcf" />
+- settings
+<img width="2222" height="1357" alt="Schermafbeelding 2026-02-25 130311" src="https://github.com/user-attachments/assets/ad659554-251d-46fe-8629-85f9cf72fc2c" />
+- downloads
+<img width="2251" height="1360" alt="Schermafbeelding 2026-02-25 130405" src="https://github.com/user-attachments/assets/77da0906-ced9-4462-bff6-1791d66cd431" />
+more screenshots comming soon
+  
