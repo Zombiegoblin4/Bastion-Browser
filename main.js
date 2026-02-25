@@ -18,15 +18,24 @@ try {
 }
 
 let mainWindow = null;
+let updateMiniWindow = null;
 let loadedExtensions = [];
 let downloadItems = [];
 let browsingHistory = [];
+let ublockOriginMetadata = null;
 
 const EXTENSIONS_DIR = path.join(__dirname, "extensions");
 const START_URL = path.join(__dirname, "src", "index.html");
 const GITHUB_RELEASES_API_URL = "https://api.github.com/repos/Zombiegoblin4/Bastion-Browser/releases";
 const GITHUB_RELEASES_TAGS_PAGE_URL = "https://github.com/Zombiegoblin4/Bastion-Browser/releases/tags";
 const GITHUB_UPDATE_ASSET_NAME = "update.zip";
+const UBLOCK_RELEASES_API_URL = "https://api.github.com/repos/gorhill/uBlock/releases";
+const UBLOCK_RELEASES_PAGE_URL = "https://github.com/gorhill/uBlock/releases";
+const UBLOCK_ASSET_HINTS = [
+  "ublock0.chromium.zip",
+  "ublock0.chromium.mv3.zip",
+  "ublock0.chromium-mv3.zip"
+];
 
 const TRACKER_HOST_RULES = [
   "doubleclick.net",
@@ -95,6 +104,7 @@ const DEFAULT_PRIVACY_CONFIG = {
   sendDoNotTrack: true,
   sendGlobalPrivacyControl: true,
   blockThirdPartyCookies: true,
+  stripThirdPartyReferer: true,
   blockFingerprintingPermissions: true,
   clearDataOnExit: false
 };
@@ -105,7 +115,8 @@ const DEFAULT_UPDATE_CONFIG = {
   allowPrerelease: false,
   feedURL: "",
   useGithubReleaseZip: true,
-  autoApplyGithubZip: true
+  autoApplyGithubZip: true,
+  autoUpdateUblockOrigin: true
 };
 
 let privacyConfig = { ...DEFAULT_PRIVACY_CONFIG };
@@ -119,12 +130,20 @@ let updaterConfigured = false;
 let updaterEventsBound = false;
 let updateCheckTimer = null;
 let privacyStatsBroadcastTimer = null;
+let updateMiniCloseTimer = null;
+let startupUpdateTasksPending = 0;
+const updateMiniStatus = {
+  app: "",
+  extensions: "",
+  chromium: ""
+};
 
 function createEmptyPrivacyStats() {
   return {
     blockedRequests: 0,
     upgradedToHttps: 0,
     strippedCookieHeaders: 0,
+    strippedRefererHeaders: 0,
     blockedPermissions: 0,
     startedAt: Date.now()
   };
@@ -158,6 +177,16 @@ function createInitialGitHubUpdateMetadata() {
     releasePage: "",
     lastAppliedTag: "",
     appliedAt: 0
+  };
+}
+
+function createInitialUblockOriginMetadata() {
+  return {
+    lastTag: "",
+    extensionPath: "",
+    checkedAt: 0,
+    updatedAt: 0,
+    releasePage: UBLOCK_RELEASES_PAGE_URL
   };
 }
 
@@ -219,6 +248,18 @@ function getGitHubUpdateDownloadDir() {
   return path.join(app.getPath("userData"), "updates");
 }
 
+function getUblockStorePath() {
+  return path.join(app.getPath("userData"), "ublock-origin.json");
+}
+
+function getUblockPackagesDir() {
+  return path.join(app.getPath("userData"), "updates", "ublock-origin");
+}
+
+function getUblockInstallRootDir() {
+  return path.join(app.getPath("userData"), "extensions", "ublock-origin");
+}
+
 function sanitizePrivacyConfig(payload) {
   const raw = payload && typeof payload === "object" ? payload : {};
   return {
@@ -232,6 +273,10 @@ function sanitizePrivacyConfig(payload) {
     blockThirdPartyCookies: sanitizeBoolean(
       raw.blockThirdPartyCookies,
       DEFAULT_PRIVACY_CONFIG.blockThirdPartyCookies
+    ),
+    stripThirdPartyReferer: sanitizeBoolean(
+      raw.stripThirdPartyReferer,
+      DEFAULT_PRIVACY_CONFIG.stripThirdPartyReferer
     ),
     blockFingerprintingPermissions: sanitizeBoolean(
       raw.blockFingerprintingPermissions,
@@ -255,6 +300,10 @@ function sanitizeUpdateConfig(payload) {
     autoApplyGithubZip: sanitizeBoolean(
       raw.autoApplyGithubZip,
       DEFAULT_UPDATE_CONFIG.autoApplyGithubZip
+    ),
+    autoUpdateUblockOrigin: sanitizeBoolean(
+      raw.autoUpdateUblockOrigin,
+      DEFAULT_UPDATE_CONFIG.autoUpdateUblockOrigin
     )
   };
 }
@@ -270,6 +319,17 @@ function sanitizeGitHubUpdateMetadata(payload) {
     releasePage: sanitizeString(raw.releasePage, ""),
     lastAppliedTag: sanitizeString(raw.lastAppliedTag, ""),
     appliedAt: Number(raw.appliedAt || 0)
+  };
+}
+
+function sanitizeUblockOriginMetadata(payload) {
+  const raw = payload && typeof payload === "object" ? payload : {};
+  return {
+    lastTag: sanitizeString(raw.lastTag, ""),
+    extensionPath: sanitizeString(raw.extensionPath, ""),
+    checkedAt: Number(raw.checkedAt || 0),
+    updatedAt: Number(raw.updatedAt || 0),
+    releasePage: sanitizeString(raw.releasePage, UBLOCK_RELEASES_PAGE_URL) || UBLOCK_RELEASES_PAGE_URL
   };
 }
 
@@ -346,6 +406,10 @@ function persistGitHubUpdateMetadata() {
   writeJsonFile(getGitHubUpdateMetaStorePath(), githubUpdateMetadata);
 }
 
+function persistUblockOriginMetadata() {
+  writeJsonFile(getUblockStorePath(), ublockOriginMetadata);
+}
+
 function loadPersistedState() {
   const downloadsPayload = readJsonFile(getDownloadsStorePath(), { items: [] });
   const historyPayload = readJsonFile(getHistoryStorePath(), { items: [] });
@@ -355,6 +419,7 @@ function loadPersistedState() {
     getGitHubUpdateMetaStorePath(),
     createInitialGitHubUpdateMetadata()
   );
+  const ublockPayload = readJsonFile(getUblockStorePath(), createInitialUblockOriginMetadata());
 
   downloadItems = Array.isArray(downloadsPayload.items)
     ? downloadsPayload.items.map(sanitizeDownloadRecord).slice(0, 300)
@@ -367,11 +432,15 @@ function loadPersistedState() {
   privacyConfig = sanitizePrivacyConfig(privacyPayload);
   updateConfig = sanitizeUpdateConfig(updatePayload);
   githubUpdateMetadata = sanitizeGitHubUpdateMetadata(githubUpdatePayload);
+  ublockOriginMetadata = sanitizeUblockOriginMetadata(ublockPayload);
 }
 
 function getWindow() {
   const focused = BrowserWindow.getFocusedWindow();
-  return focused || mainWindow;
+  if (focused && focused !== updateMiniWindow) {
+    return focused;
+  }
+  return mainWindow;
 }
 
 function sendWindowState() {
@@ -446,6 +515,291 @@ function incrementPrivacyStat(key) {
   queuePrivacyStatsBroadcast();
 }
 
+function getUpdateMiniSnapshot() {
+  return {
+    version: app.getVersion(),
+    app: sanitizeString(updateMiniStatus.app, "Waiting..."),
+    extensions: sanitizeString(updateMiniStatus.extensions, "Waiting..."),
+    chromium: sanitizeString(updateMiniStatus.chromium, "Waiting..."),
+    pendingTasks: startupUpdateTasksPending
+  };
+}
+
+function buildUpdateMiniHtml(snapshot) {
+  const initialPayload = JSON.stringify(snapshot);
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bastion Update Check</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1017;
+      --panel: #111a26;
+      --border: #2a3b52;
+      --text: #eaf2fb;
+      --muted: #9eb2c8;
+      --accent: #55b1ff;
+      --ok: #22c55e;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      font-family: "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top right, #19304f 0%, var(--bg) 60%);
+      color: var(--text);
+      overflow: hidden;
+    }
+    .wrap {
+      width: 100%;
+      height: 100%;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .title {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .version {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: linear-gradient(145deg, rgba(20, 32, 49, 0.95), rgba(10, 17, 28, 0.95));
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 98px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      font-size: 12px;
+    }
+    .label {
+      color: var(--muted);
+    }
+    .value {
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pending {
+      font-size: 11px;
+      color: var(--ok);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">Bastion Update Check</div>
+    <div id="version" class="version"></div>
+    <div class="card">
+      <div class="row"><div class="label">App</div><div id="app" class="value"></div></div>
+      <div class="row"><div class="label">Chromium</div><div id="chromium" class="value"></div></div>
+      <div class="row"><div class="label">Extensions</div><div id="extensions" class="value"></div></div>
+    </div>
+    <div id="pending" class="pending"></div>
+  </div>
+  <script>
+    const initial = ${initialPayload};
+
+    function toText(value, fallback) {
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+      return fallback;
+    }
+
+    function render(payload) {
+      const data = payload && typeof payload === "object" ? payload : {};
+      const version = toText(data.version, "unknown");
+      const appText = toText(data.app, "Waiting...");
+      const chromiumText = toText(data.chromium, "Waiting...");
+      const extensionsText = toText(data.extensions, "Waiting...");
+      const pendingTasks = Number(data.pendingTasks || 0);
+
+      document.getElementById("version").textContent = "Version " + version;
+      document.getElementById("app").textContent = appText;
+      document.getElementById("chromium").textContent = chromiumText;
+      document.getElementById("extensions").textContent = extensionsText;
+      document.getElementById("pending").textContent =
+        pendingTasks > 0 ? "Working... " + pendingTasks + " task(s) remaining." : "Startup checks complete.";
+    }
+
+    window.__setBastionUpdateMiniStatus = render;
+    render(initial);
+  </script>
+</body>
+</html>`;
+}
+
+function createUpdateMiniWindow() {
+  if (updateMiniWindow && !updateMiniWindow.isDestroyed()) {
+    return updateMiniWindow;
+  }
+
+  updateMiniWindow = new BrowserWindow({
+    width: 430,
+    height: 236,
+    minWidth: 430,
+    minHeight: 236,
+    maxWidth: 430,
+    maxHeight: 236,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    movable: true,
+    show: false,
+    title: "Bastion Update Check",
+    autoHideMenuBar: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    frame: true,
+    backgroundColor: "#0b1017",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  });
+
+  updateMiniWindow.setMenuBarVisibility(false);
+
+  updateMiniWindow.once("ready-to-show", () => {
+    if (!updateMiniWindow || updateMiniWindow.isDestroyed()) {
+      return;
+    }
+    if (typeof updateMiniWindow.showInactive === "function") {
+      updateMiniWindow.showInactive();
+    } else {
+      updateMiniWindow.show();
+    }
+  });
+
+  updateMiniWindow.webContents.on("did-finish-load", () => {
+    pushUpdateMiniWindowState();
+  });
+
+  updateMiniWindow.on("closed", () => {
+    updateMiniWindow = null;
+    if (updateMiniCloseTimer) {
+      clearTimeout(updateMiniCloseTimer);
+      updateMiniCloseTimer = null;
+    }
+  });
+
+  const url = `data:text/html;charset=utf-8,${encodeURIComponent(buildUpdateMiniHtml(getUpdateMiniSnapshot()))}`;
+  updateMiniWindow.loadURL(url);
+
+  return updateMiniWindow;
+}
+
+function pushUpdateMiniWindowState() {
+  if (!updateMiniWindow || updateMiniWindow.isDestroyed()) {
+    return;
+  }
+
+  if (updateMiniWindow.webContents.isLoadingMainFrame()) {
+    return;
+  }
+
+  const payload = JSON.stringify(getUpdateMiniSnapshot());
+  updateMiniWindow.webContents
+    .executeJavaScript(
+      `if (window.__setBastionUpdateMiniStatus) { window.__setBastionUpdateMiniStatus(${payload}); }`,
+      true
+    )
+    .catch(() => {
+      // Best-effort update for the status window.
+    });
+}
+
+function setUpdateMiniSection(section, message) {
+  if (!Object.prototype.hasOwnProperty.call(updateMiniStatus, section)) {
+    return;
+  }
+  updateMiniStatus[section] = sanitizeString(message, "").trim();
+  pushUpdateMiniWindowState();
+}
+
+function hasUpdateMiniErrorState() {
+  const text = Object.values(updateMiniStatus).join(" ").toLowerCase();
+  return text.includes("error") || text.includes("failed") || text.includes("unable");
+}
+
+function clearUpdateMiniCloseTimer() {
+  if (updateMiniCloseTimer) {
+    clearTimeout(updateMiniCloseTimer);
+    updateMiniCloseTimer = null;
+  }
+}
+
+function maybeScheduleUpdateMiniWindowClose() {
+  if (startupUpdateTasksPending > 0) {
+    return;
+  }
+
+  if (!updateMiniWindow || updateMiniWindow.isDestroyed()) {
+    return;
+  }
+
+  clearUpdateMiniCloseTimer();
+  const closeDelayMs = hasUpdateMiniErrorState() ? 7000 : 2200;
+  updateMiniCloseTimer = setTimeout(() => {
+    updateMiniCloseTimer = null;
+    if (updateMiniWindow && !updateMiniWindow.isDestroyed()) {
+      updateMiniWindow.close();
+    }
+  }, closeDelayMs);
+}
+
+function beginStartupUpdateTask(section, message) {
+  startupUpdateTasksPending += 1;
+  clearUpdateMiniCloseTimer();
+  createUpdateMiniWindow();
+  if (section && message) {
+    setUpdateMiniSection(section, message);
+  } else {
+    pushUpdateMiniWindowState();
+  }
+}
+
+function finishStartupUpdateTask(section, message) {
+  if (section && message) {
+    setUpdateMiniSection(section, message);
+  }
+
+  startupUpdateTasksPending = Math.max(0, startupUpdateTasksPending - 1);
+  pushUpdateMiniWindowState();
+  maybeScheduleUpdateMiniWindowClose();
+}
+
+function syncUpdateMiniStatusFromUpdateState() {
+  const appMessage = sanitizeString(updateStatus.message, "Updater idle.");
+  setUpdateMiniSection("app", appMessage);
+
+  if (shouldUseGitHubReleaseZipUpdater()) {
+    setUpdateMiniSection("chromium", `Bundled with Bastion app updates. ${appMessage}`);
+  } else {
+    setUpdateMiniSection("chromium", `Managed by updater backend. ${appMessage}`);
+  }
+}
+
 function setUpdateStatus(patch) {
   const next = patch && typeof patch === "object" ? patch : {};
   updateStatus = {
@@ -456,6 +810,7 @@ function setUpdateStatus(patch) {
     updatedAt: Date.now()
   };
   sendUpdateStatus();
+  syncUpdateMiniStatusFromUpdateState();
 }
 
 function pushRuntimeStateToRenderer() {
@@ -532,7 +887,25 @@ async function loadBundledExtensions() {
   }));
   candidates.push(...userPaths);
 
+  const managedUblockPath = sanitizeString(
+    ublockOriginMetadata && ublockOriginMetadata.extensionPath,
+    ""
+  ).trim();
+  if (managedUblockPath && fs.existsSync(path.join(managedUblockPath, "manifest.json"))) {
+    candidates.push({
+      path: managedUblockPath,
+      source: "Managed (uBlock Origin)"
+    });
+  }
+
+  const seenPaths = new Set();
   for (const candidate of candidates) {
+    const resolvedPath = path.resolve(candidate.path);
+    if (seenPaths.has(resolvedPath)) {
+      continue;
+    }
+    seenPaths.add(resolvedPath);
+
     const result = await loadExtension(candidate.path, candidate.source);
     if (!result.ok && candidate.source === "User") {
       removeUserExtensionPath(candidate.path);
@@ -596,6 +969,9 @@ function createWindow() {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    if (updateMiniWindow && !updateMiniWindow.isDestroyed()) {
+      updateMiniWindow.close();
+    }
   });
 }
 
@@ -760,6 +1136,19 @@ function findHeaderKey(headers, name) {
   return null;
 }
 
+function getHeaderValue(headers, name) {
+  const key = findHeaderKey(headers, name);
+  if (!key) {
+    return "";
+  }
+
+  const value = headers[key];
+  if (Array.isArray(value)) {
+    return String(value[0] || "");
+  }
+  return String(value || "");
+}
+
 function setHeader(headers, name, value) {
   const key = findHeaderKey(headers, name) || name;
   headers[key] = value;
@@ -774,6 +1163,15 @@ function removeHeader(headers, name) {
 
 function hasHeader(headers, name) {
   return Boolean(findHeaderKey(headers, name));
+}
+
+function getRequestFirstPartyContext(details, requestHeaders) {
+  if (typeof details.initiator === "string" && details.initiator.trim()) {
+    return details.initiator;
+  }
+
+  const referer = getHeaderValue(requestHeaders, "Referer").trim();
+  return referer;
 }
 
 function configurePrivacyNetworkLayer() {
@@ -808,6 +1206,7 @@ function configurePrivacyNetworkLayer() {
 
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
     const requestHeaders = { ...(details.requestHeaders || {}) };
+    const firstPartyContext = getRequestFirstPartyContext(details, requestHeaders);
 
     if (privacyConfig.sendDoNotTrack) {
       setHeader(requestHeaders, "DNT", "1");
@@ -824,10 +1223,19 @@ function configurePrivacyNetworkLayer() {
     if (
       privacyConfig.blockThirdPartyCookies &&
       hasHeader(requestHeaders, "Cookie") &&
-      isThirdPartyRequest(details.url, details.initiator || "")
+      isThirdPartyRequest(details.url, firstPartyContext)
     ) {
       removeHeader(requestHeaders, "Cookie");
       incrementPrivacyStat("strippedCookieHeaders");
+    }
+
+    if (
+      privacyConfig.stripThirdPartyReferer &&
+      hasHeader(requestHeaders, "Referer") &&
+      isThirdPartyRequest(details.url, firstPartyContext)
+    ) {
+      removeHeader(requestHeaders, "Referer");
+      incrementPrivacyStat("strippedRefererHeaders");
     }
 
     callback({ requestHeaders });
@@ -1080,6 +1488,334 @@ async function downloadGitHubAssetToPath(assetURL, targetPath) {
     filePath: targetPath,
     sizeBytes: Number(stats.size || 0)
   };
+}
+
+function resolveUblockReleasesApiURL() {
+  const fromEnv = sanitizeString(process.env.BASTION_UBLOCK_RELEASES_API_URL, "").trim();
+  return fromEnv || UBLOCK_RELEASES_API_URL;
+}
+
+function resolveUblockReleasesPageURL() {
+  const fromEnv = sanitizeString(process.env.BASTION_UBLOCK_RELEASES_PAGE_URL, "").trim();
+  return fromEnv || UBLOCK_RELEASES_PAGE_URL;
+}
+
+function resolveUblockPackagePath(tagValue, assetName) {
+  const safeTag = sanitizeTagForPath(tagValue);
+  const safeAssetName = sanitizeString(assetName, "ublock-origin.zip").trim() || "ublock-origin.zip";
+  return path.join(getUblockPackagesDir(), safeTag, safeAssetName);
+}
+
+function resolveUblockStagingDir(tagValue) {
+  const safeTag = sanitizeTagForPath(tagValue);
+  return path.join(getUblockPackagesDir(), "staged", safeTag);
+}
+
+function resolveUblockInstallPath(tagValue) {
+  const safeTag = sanitizeTagForPath(tagValue);
+  return path.join(getUblockInstallRootDir(), safeTag);
+}
+
+function hasValidExtensionManifest(extensionPath) {
+  const normalized = sanitizeString(extensionPath, "").trim();
+  return Boolean(normalized) && fs.existsSync(path.join(normalized, "manifest.json"));
+}
+
+function updateUblockMetadata(patch) {
+  const rawPatch = patch && typeof patch === "object" ? patch : {};
+  ublockOriginMetadata = sanitizeUblockOriginMetadata({
+    ...ublockOriginMetadata,
+    ...rawPatch
+  });
+  persistUblockOriginMetadata();
+  return ublockOriginMetadata;
+}
+
+async function fetchLatestUblockRelease() {
+  ensureFetchAvailable();
+  const apiURL = resolveUblockReleasesApiURL();
+  const response = await fetch(apiURL, {
+    method: "GET",
+    headers: buildGitHubRequestHeaders(),
+    redirect: "follow"
+  });
+
+  if (!response.ok) {
+    throw new Error(`uBlock releases request failed (${response.status}).`);
+  }
+
+  const payload = await response.json();
+  const releases = Array.isArray(payload) ? payload : [];
+  const nonDraftReleases = releases
+    .filter((release) => release && !release.draft)
+    .filter((release) => !release.prerelease);
+
+  const sorted = nonDraftReleases.sort((left, right) => {
+    const leftTime = Date.parse(
+      String((left && (left.published_at || left.created_at || left.createdAt)) || "")
+    ) || 0;
+    const rightTime = Date.parse(
+      String((right && (right.published_at || right.created_at || right.createdAt)) || "")
+    ) || 0;
+    return rightTime - leftTime;
+  });
+
+  return sorted[0] || null;
+}
+
+function findUblockReleaseAsset(release) {
+  const assets = Array.isArray(release && release.assets) ? release.assets : [];
+  if (assets.length === 0) {
+    return null;
+  }
+
+  const normalizedHints = UBLOCK_ASSET_HINTS.map((item) => item.toLowerCase());
+  const exact = assets.find((asset) => {
+    const name = String((asset && asset.name) || "").toLowerCase();
+    return normalizedHints.includes(name);
+  });
+  if (exact) {
+    return exact;
+  }
+
+  const hinted = assets.find((asset) => {
+    const name = String((asset && asset.name) || "").toLowerCase();
+    return normalizedHints.some((hint) => name.includes(hint));
+  });
+  if (hinted) {
+    return hinted;
+  }
+
+  const chromiumZip = assets.find((asset) => {
+    const name = String((asset && asset.name) || "");
+    return /chromium[^/]*\.zip$/i.test(name);
+  });
+  if (chromiumZip) {
+    return chromiumZip;
+  }
+
+  return assets.find((asset) => String((asset && asset.name) || "").toLowerCase().endsWith(".zip")) || null;
+}
+
+function findManifestRootDir(rootDir) {
+  const manifestFiles = collectFilesRecursive(rootDir).filter(
+    (filePath) => path.basename(filePath).toLowerCase() === "manifest.json"
+  );
+
+  if (manifestFiles.length === 0) {
+    return "";
+  }
+
+  manifestFiles.sort((left, right) => left.length - right.length);
+  return path.dirname(manifestFiles[0]);
+}
+
+async function installManagedUblockFromZip({ tag, zipPath, releasePage }) {
+  if (process.platform !== "win32") {
+    return {
+      ok: false,
+      error: "uBlock Origin ZIP install is currently implemented for Windows."
+    };
+  }
+
+  const stageDir = resolveUblockStagingDir(tag || "latest");
+  const installRoot = getUblockInstallRootDir();
+  const installPath = resolveUblockInstallPath(tag || "latest");
+
+  try {
+    fs.rmSync(stageDir, { recursive: true, force: true });
+    fs.mkdirSync(stageDir, { recursive: true });
+
+    await expandArchiveOnWindows(zipPath, stageDir);
+    const manifestRoot = findManifestRootDir(stageDir);
+    if (!manifestRoot) {
+      throw new Error("No manifest.json found in the downloaded uBlock Origin package.");
+    }
+
+    fs.rmSync(installRoot, { recursive: true, force: true });
+    fs.mkdirSync(installRoot, { recursive: true });
+    fs.cpSync(manifestRoot, installPath, { recursive: true, force: true });
+
+    if (!hasValidExtensionManifest(installPath)) {
+      throw new Error("uBlock Origin package install failed (manifest.json missing after copy).");
+    }
+
+    updateUblockMetadata({
+      lastTag: String(tag || "").trim(),
+      extensionPath: installPath,
+      checkedAt: Date.now(),
+      updatedAt: Date.now(),
+      releasePage: sanitizeString(releasePage, resolveUblockReleasesPageURL()) || resolveUblockReleasesPageURL()
+    });
+
+    return {
+      ok: true,
+      extensionPath: installPath
+    };
+  } catch (error) {
+    return { ok: false, error: getErrorMessage(error) };
+  } finally {
+    try {
+      fs.rmSync(stageDir, { recursive: true, force: true });
+    } catch (_) {
+      // Best-effort cleanup.
+    }
+  }
+}
+
+async function checkAndUpdateUblockOrigin(options = {}) {
+  const opts = {
+    forceDownload: false,
+    ...options
+  };
+
+  const releasesPage = resolveUblockReleasesPageURL();
+  setUpdateMiniSection("extensions", "Checking uBlock Origin updates...");
+
+  let release = null;
+  try {
+    release = await fetchLatestUblockRelease();
+  } catch (error) {
+    const message = getErrorMessage(error);
+    updateUblockMetadata({
+      checkedAt: Date.now(),
+      releasePage: releasesPage
+    });
+    setUpdateMiniSection("extensions", `uBlock Origin check failed: ${message}`);
+    return { ok: false, error: message };
+  }
+
+  if (!release || !release.tag_name) {
+    const message = "No uBlock Origin release tags were found.";
+    updateUblockMetadata({
+      checkedAt: Date.now(),
+      releasePage: releasesPage
+    });
+    setUpdateMiniSection("extensions", message);
+    return { ok: false, error: message };
+  }
+
+  const tag = String(release.tag_name || "").trim();
+  const releasePage = sanitizeString(release.html_url, releasesPage) || releasesPage;
+  const asset = findUblockReleaseAsset(release);
+
+  if (!asset || !asset.browser_download_url) {
+    const message = `Latest uBlock tag ${tag} has no Chromium ZIP asset.`;
+    updateUblockMetadata({
+      checkedAt: Date.now(),
+      releasePage
+    });
+    setUpdateMiniSection("extensions", message);
+    return { ok: false, error: message };
+  }
+
+  const installedPath = sanitizeString(ublockOriginMetadata && ublockOriginMetadata.extensionPath, "").trim();
+  const alreadyInstalled = ublockOriginMetadata.lastTag === tag && hasValidExtensionManifest(installedPath);
+  if (alreadyInstalled && !opts.forceDownload) {
+    updateUblockMetadata({
+      checkedAt: Date.now(),
+      releasePage
+    });
+    setUpdateMiniSection("extensions", `uBlock Origin ${tag} is already up to date.`);
+    return {
+      ok: true,
+      upToDate: true,
+      tag,
+      extensionPath: installedPath,
+      releasePage
+    };
+  }
+
+  const assetName = sanitizeString(asset.name, "ublock-origin.zip").trim() || "ublock-origin.zip";
+  const packagePath = resolveUblockPackagePath(tag, assetName);
+  let sizeBytes = 0;
+
+  if (!opts.forceDownload && fs.existsSync(packagePath)) {
+    sizeBytes = Number(fs.statSync(packagePath).size || 0);
+    setUpdateMiniSection("extensions", `Using cached uBlock Origin package for ${tag}...`);
+  } else {
+    setUpdateMiniSection("extensions", `Downloading uBlock Origin ${tag}...`);
+    try {
+      const downloadResult = await downloadGitHubAssetToPath(asset.browser_download_url, packagePath);
+      sizeBytes = Number(downloadResult.sizeBytes || 0);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      updateUblockMetadata({
+        checkedAt: Date.now(),
+        releasePage
+      });
+      setUpdateMiniSection("extensions", `uBlock Origin download failed: ${message}`);
+      return { ok: false, error: message };
+    }
+  }
+
+  setUpdateMiniSection("extensions", `Installing uBlock Origin ${tag}...`);
+  const installResult = await installManagedUblockFromZip({
+    tag,
+    zipPath: packagePath,
+    releasePage
+  });
+
+  if (!installResult.ok) {
+    const message = installResult.error || "uBlock Origin install failed.";
+    updateUblockMetadata({
+      checkedAt: Date.now(),
+      releasePage
+    });
+    setUpdateMiniSection("extensions", message);
+    return { ok: false, error: message };
+  }
+
+  setUpdateMiniSection("extensions", `uBlock Origin ${tag} installed.`);
+  return {
+    ok: true,
+    updated: true,
+    tag,
+    extensionPath: installResult.extensionPath,
+    filePath: packagePath,
+    sizeBytes,
+    releasePage
+  };
+}
+
+async function reloadManagedUblockExtension() {
+  const extensionPath = sanitizeString(ublockOriginMetadata && ublockOriginMetadata.extensionPath, "").trim();
+  if (!hasValidExtensionManifest(extensionPath)) {
+    return { ok: false, error: "Managed uBlock Origin extension path is invalid." };
+  }
+
+  const managedRoot = path.resolve(getUblockInstallRootDir());
+  const managedLoaded = loadedExtensions.filter((item) => {
+    const itemPath = sanitizeString(item && item.path, "").trim();
+    if (!itemPath) {
+      return false;
+    }
+
+    const resolved = path.resolve(itemPath);
+    return (
+      resolved === path.resolve(extensionPath) ||
+      resolved.startsWith(`${managedRoot}${path.sep}`) ||
+      String(item.source || "").startsWith("Managed (uBlock Origin)")
+    );
+  });
+
+  for (const extension of managedLoaded) {
+    try {
+      session.defaultSession.removeExtension(extension.id);
+    } catch (_) {
+      // Best-effort unload.
+    }
+  }
+  if (managedLoaded.length > 0) {
+    const managedIds = new Set(managedLoaded.map((item) => item.id));
+    loadedExtensions = loadedExtensions.filter((item) => !managedIds.has(item.id));
+  }
+
+  const loadResult = await loadExtension(extensionPath, "Managed (uBlock Origin)");
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("extensions:updated", loadedExtensions);
+  }
+  return loadResult;
 }
 
 function escapePowerShellLiteral(value) {
@@ -2137,6 +2873,97 @@ function wireIpc() {
   });
 }
 
+function startStartupAppUpdateFlow() {
+  if (!updateConfig.autoCheck) {
+    setUpdateMiniSection("app", "Bastion auto update check is disabled.");
+    setUpdateMiniSection("chromium", "Chromium runtime updates follow Bastion app updates.");
+    maybeScheduleUpdateMiniWindowClose();
+    return;
+  }
+
+  beginStartupUpdateTask("app", "Checking for Bastion updates...");
+  if (shouldUseGitHubReleaseZipUpdater()) {
+    setUpdateMiniSection("chromium", "Chromium runtime patches ship with Bastion app packages.");
+    checkGitHubReleaseZipUpdate({
+      manual: false,
+      download: true
+    })
+      .then((result) => {
+        if (!updateConfig.autoApplyGithubZip || !app.isPackaged) {
+          return;
+        }
+
+        if (!result || !result.ok || result.alreadyApplied || result.upToDate) {
+          return;
+        }
+
+        const zipPath = String(result.filePath || "").trim();
+        const tag = String(result.tag || "").trim();
+        if (!zipPath) {
+          return;
+        }
+
+        applyGitHubReleaseZipUpdate({
+          manual: false,
+          tag,
+          zipPath,
+          releasePage: result.releasePage || updateStatus.releasePage
+        }).catch(() => {
+          // Status update already handled by apply path.
+        });
+      })
+      .catch((error) => {
+        setUpdateMiniSection("app", `Bastion update check failed: ${getErrorMessage(error)}`);
+      })
+      .finally(() => {
+        finishStartupUpdateTask();
+      });
+    return;
+  }
+
+  setUpdateMiniSection("chromium", "Checking updater backend for Chromium runtime patches...");
+  checkForUpdates(false)
+    .catch((error) => {
+      setUpdateMiniSection("app", `Bastion update check failed: ${getErrorMessage(error)}`);
+    })
+    .finally(() => {
+      finishStartupUpdateTask();
+    });
+}
+
+function startStartupUblockUpdateFlow() {
+  if (!updateConfig.autoUpdateUblockOrigin) {
+    setUpdateMiniSection("extensions", "uBlock Origin auto-update is disabled.");
+    maybeScheduleUpdateMiniWindowClose();
+    return;
+  }
+
+  beginStartupUpdateTask("extensions", "Checking uBlock Origin updates...");
+  checkAndUpdateUblockOrigin()
+    .then(async (result) => {
+      if (!result || !result.ok || !result.extensionPath) {
+        return;
+      }
+
+      const alreadyLoaded = Boolean(getExtensionByPath(result.extensionPath));
+      if (!result.updated && alreadyLoaded) {
+        return;
+      }
+
+      const loadResult = await reloadManagedUblockExtension();
+      if (!loadResult || !loadResult.ok) {
+        const errorMessage = (loadResult && loadResult.error) || "Unable to load managed uBlock Origin extension.";
+        setUpdateMiniSection("extensions", errorMessage);
+      }
+    })
+    .catch((error) => {
+      setUpdateMiniSection("extensions", `uBlock Origin update failed: ${getErrorMessage(error)}`);
+    })
+    .finally(() => {
+      finishStartupUpdateTask();
+    });
+}
+
 app.whenReady().then(async () => {
   loadPersistedState();
   wireIpc();
@@ -2144,51 +2971,18 @@ app.whenReady().then(async () => {
   configurePermissions();
   wireDownloads();
   configureAutoUpdater();
+  setUpdateMiniSection("app", "Preparing updater...");
+  setUpdateMiniSection("chromium", "Preparing runtime update checks...");
+  setUpdateMiniSection("extensions", "Preparing extension update checks...");
+  createUpdateMiniWindow();
   await loadBundledExtensions();
   createWindow();
-
-  if (updateConfig.autoCheck) {
-    if (shouldUseGitHubReleaseZipUpdater()) {
-      checkGitHubReleaseZipUpdate({
-        manual: false,
-        download: true
-      })
-        .then((result) => {
-          if (!updateConfig.autoApplyGithubZip || !app.isPackaged) {
-            return;
-          }
-
-          if (!result || !result.ok || result.alreadyApplied || result.upToDate) {
-            return;
-          }
-
-          const zipPath = String(result.filePath || "").trim();
-          const tag = String(result.tag || "").trim();
-          if (!zipPath) {
-            return;
-          }
-
-          applyGitHubReleaseZipUpdate({
-            manual: false,
-            tag,
-            zipPath,
-            releasePage: result.releasePage || updateStatus.releasePage
-          }).catch(() => {
-            // Status update already handled by apply path.
-          });
-        })
-        .catch(() => {
-          // Status update already handled by updater state.
-        });
-    } else {
-      checkForUpdates(false).catch(() => {
-        // Status update already handled by updater events.
-      });
-    }
-  }
+  startStartupAppUpdateFlow();
+  startStartupUblockUpdateFlow();
+  maybeScheduleUpdateMiniWindowClose();
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow();
     }
   });
@@ -2198,6 +2992,12 @@ app.on("before-quit", () => {
   if (updateCheckTimer) {
     clearInterval(updateCheckTimer);
     updateCheckTimer = null;
+  }
+
+  clearUpdateMiniCloseTimer();
+  if (updateMiniWindow && !updateMiniWindow.isDestroyed()) {
+    updateMiniWindow.destroy();
+    updateMiniWindow = null;
   }
 
   if (privacyConfig.clearDataOnExit) {
