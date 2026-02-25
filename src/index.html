@@ -46,10 +46,34 @@
             autocomplete="off"
             placeholder="Search DuckDuckGo or enter a URL"
           />
-          <button id="bookmarkBtn" type="button" class="nav-btn" title="Bookmark">Bookmark</button>
+          <button
+            id="bookmarkBtn"
+            type="button"
+            class="nav-btn nav-icon-btn bookmark-btn"
+            title="Bookmark"
+            aria-label="Bookmark"
+          ></button>
           <button id="fullscreenBtn" type="button" class="nav-btn" title="Fullscreen">Fullscreen</button>
           <button id="settingsBtn" type="button" class="nav-btn" title="Settings">Settings</button>
+          <button
+            id="menuBtn"
+            type="button"
+            class="nav-btn nav-icon-btn menu-btn"
+            title="Browser Menu"
+            aria-label="Browser Menu"
+          >...</button>
         </form>
+        <div id="browserMenu" class="browser-menu hidden no-drag">
+          <button type="button" class="menu-item" data-menu-action="print">Print Page</button>
+          <button type="button" class="menu-item" data-menu-action="inspect">Inspect Element</button>
+          <button type="button" class="menu-item" data-menu-action="source">View Page Source</button>
+          <button type="button" class="menu-item" data-menu-action="copy-url">Copy URL</button>
+          <button type="button" class="menu-item" data-menu-action="downloads">Open Downloads</button>
+          <button type="button" class="menu-item" data-menu-action="history">Open History</button>
+          <button type="button" class="menu-item" data-menu-action="settings">Open Settings</button>
+          <button type="button" class="menu-item" data-menu-action="newtab">Open New Tab</button>
+          <button type="button" class="menu-item danger" data-menu-action="clear-history">Clear History</button>
+        </div>
         <div class="page-progress-track">
           <div id="pageProgressBar" class="page-progress-bar"></div>
         </div>
